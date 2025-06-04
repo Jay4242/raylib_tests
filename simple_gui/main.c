@@ -262,6 +262,17 @@ void update(Rectangle* dropArea, ScrollBar* scrollBar, float* totalFilenamesHeig
         }
     }
 
+    // Keyboard input for moving the selected file
+    if (IsKeyPressed(KEY_UP)) {
+        if (selectedFileIndex > 0) {
+            selectedFileIndex--;
+        }
+    } else if (IsKeyPressed(KEY_DOWN)) {
+        if (selectedFileIndex < fileCount - 1) {
+            selectedFileIndex++;
+        }
+    }
+
     // Determine scrollbar visibility
     float maxScroll = *totalFilenamesHeight - dropArea->height + 20;
     *showScrollBar = maxScroll > 0;
