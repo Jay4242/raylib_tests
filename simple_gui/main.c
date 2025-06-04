@@ -109,7 +109,6 @@ void initScrollBar(ScrollBar* scrollBar, Rectangle dropArea) {
     scrollBar->horizontalBounds.x = dropArea.x;
     scrollBar->horizontalBounds.y = dropArea.y + dropArea.height - 40;
     scrollBar->horizontalBounds.width = dropArea.width - 20;
-    scrollBar->horizontalBounds.height = 20;
     scrollBar->horizontalValue = 0.0f;
     scrollBar->verticalKnobHeight = 0.0f;
     scrollBar->horizontalKnobWidth = 0.0f;
@@ -342,7 +341,7 @@ void draw(Rectangle dropArea, ScrollBar scrollBar, float totalFilenamesHeight, f
                 if (textures[selectedFileIndex].width > availableWidth) {
                     scale = (float)availableWidth / textures[selectedFileIndex].width;
                 }
-                if (textures[selectedFileIndex].height > availableHeight) { // Corrected this line
+                if (textures[selectedFileIndex].height * scale > availableHeight) {
                     scale = (float)availableHeight / textures[selectedFileIndex].height;
                 }
 
