@@ -265,11 +265,39 @@ void update(Rectangle* dropArea, ScrollBar* scrollBar, float* totalFilenamesHeig
     // Keyboard input for moving the selected file
     if (IsKeyPressed(KEY_UP)) {
         if (selectedFileIndex > 0) {
+            // Unload previously selected texture, if any
+            if (selectedFileIndex != -1 && textures[selectedFileIndex].id > 0) {
+                UnloadTexture(textures[selectedFileIndex]);
+                TraceLog(LOG_INFO, "Unloaded texture for %s with ID %d", filenames[selectedFileIndex], textures[selectedFileIndex].id);
+                textures[selectedFileIndex].id = 0; // Reset texture ID
+            }
             selectedFileIndex--;
+            // Load texture if it was unloaded
+            if (isImageFile(filenames[selectedFileIndex]) && textures[selectedFileIndex].id == 0) {
+                textures[selectedFileIndex] = LoadTexture(filenames[selectedFileIndex]);
+                TraceLog(LOG_INFO, "Texture loaded for %s with ID %d", filenames[selectedFileIndex], textures[selectedFileIndex].id);
+                if (textures[selectedFileIndex].id == 0) {
+                    TraceLog(LOG_ERROR, "Failed to load texture: %s", filenames[selectedFileIndex]);
+                }
+            }
         }
     } else if (IsKeyPressed(KEY_DOWN)) {
         if (selectedFileIndex < fileCount - 1) {
+            // Unload previously selected texture, if any
+            if (selectedFileIndex != -1 && textures[selectedFileIndex].id > 0) {
+                UnloadTexture(textures[selectedFileIndex]);
+                TraceLog(LOG_INFO, "Unloaded texture for %s with ID %d", filenames[selectedFileIndex], textures[selectedFileIndex].id);
+                textures[selectedFileIndex].id = 0; // Reset texture ID
+            }
             selectedFileIndex++;
+            // Load texture if it was unloaded
+            if (isImageFile(filenames[selectedFileIndex]) && textures[selectedFileIndex].id == 0) {
+                textures[selectedFileIndex] = LoadTexture(filenames[selectedFileIndex]);
+                TraceLog(LOG_INFO, "Texture loaded for %s with ID %d", filenames[selectedFileIndex], textures[selectedFileIndex].id);
+                if (textures[selectedFileIndex].id == 0) {
+                    TraceLog(LOG_ERROR, "Failed to load texture: %s", filenames[selectedFileIndex]);
+                }
+            }
         }
     }
 
