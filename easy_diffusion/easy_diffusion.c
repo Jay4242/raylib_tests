@@ -4,6 +4,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <pthread.h>
 #include <jansson.h>
 #include <curl/curl.h>
 #include <raylib.h>
@@ -339,7 +340,13 @@ unsigned char* base64_decode(const char* data, size_t data_len, size_t* output_l
 // Global variables
 Texture2D generatedTexture = { 0 };
 bool generating = false;
+bool imageReady = false; // Flag to indicate if the image is ready to be displayed
+unsigned char* decodedImage = NULL;
+size_t decodedImageSize = 0;
 char statusMessage[256] = { 0 };
+pthread_t generateThread;
+pthread_t loraThread;
+pthread_mutex_t mutex;
 
 char* rand_lora = NULL;
 char* lora_info = NULL;
@@ -347,12 +354,22 @@ char* char_line = NULL;
 char** top_tags = NULL;
 int num_tags = 0;
 char* prompt = NULL;
+char current_percent[8] = "";
 
 // Function to unload the generated texture
 void unloadGeneratedTexture() {
     if (generatedTexture.id != 0) {
         UnloadTexture(generatedTexture);
         generatedTexture.id = 0;
+    }
+}
+
+// Function to free image data
+void freeDecodedImage() {
+    if (decodedImage) {
+        free(decodedImage);
+        decodedImage = NULL;
+        decodedImageSize = 0;
     }
 }
 
@@ -443,32 +460,16 @@ int display_final_image(const char* task) {
     // Free the base64 encoded data
     free(image_data_base64);
 
-    // Load image data into Raylib
-    Image image = LoadImageFromMemory(".png", decoded_data, decoded_size);
-    if (image.data == NULL) {
-        snprintf(statusMessage, sizeof(statusMessage), "Failed to load image from memory.");
-        printf("Failed to load image from memory.\n");
-        free(decoded_data);
-        return 1;
-    }
-    printf("Image loaded from memory successfully, width: %d, height: %d\n", image.width, image.height);
+    pthread_mutex_lock(&mutex);
+    freeDecodedImage(); // Free previous image data if any
+    decodedImage = decoded_data;
+    decodedImageSize = decoded_size;
+    strncpy(current_percent, "", sizeof(current_percent) - 1);
+    current_percent[sizeof(current_percent) - 1] = '\0';
+    imageReady = true;
+    pthread_mutex_unlock(&mutex);
 
-    // Unload the previous texture if it exists
-    unloadGeneratedTexture();
-    printf("Unloaded generated texture\n");
-
-    generatedTexture = LoadTextureFromImage(image);
-    UnloadImage(image);
-    free(decoded_data);
-    printf("Texture loaded from image, texture ID: %u\n", generatedTexture.id);
-
-    if (generatedTexture.id == 0) {
-        snprintf(statusMessage, sizeof(statusMessage), "Failed to load texture from image.");
-        fprintf(stderr, "Failed to load texture from image.\n");
-        return 1;
-    }
-
-    snprintf(statusMessage, sizeof(statusMessage), "Image generated successfully!");
+    snprintf(statusMessage, sizeof(statusMessage), "Image decoded, ready to display!");
     return 0;
 }
 
@@ -597,6 +598,10 @@ int generate_image(const char* prompt, const char* rand_lora) {
     }
 
     printf("Task ID: %s\n", task);
+    pthread_mutex_lock(&mutex);
+    strncpy(current_percent, "0%", sizeof(current_percent) - 1);
+    current_percent[sizeof(current_percent) - 1] = '\0';
+    pthread_mutex_unlock(&mutex);
     json_decref(root);
     free(response);
     free(data);
@@ -610,6 +615,10 @@ int generate_image(const char* prompt, const char* rand_lora) {
     char* status = strdup("pending");
     char percent[8] = "0%";
     int result = 1;
+    pthread_mutex_lock(&mutex);
+    strncpy(current_percent, "0%", sizeof(current_percent) - 1);
+    current_percent[sizeof(current_percent) - 1] = '\0';
+    pthread_mutex_unlock(&mutex);
 
     while (strcmp(status, "completed") != 0) {
         if (strcmp(status, "error") == 0) {
@@ -717,10 +726,14 @@ int generate_image(const char* prompt, const char* rand_lora) {
                 int steps = json_integer_value(steps_json);
                 int total_steps = json_integer_value(total_steps_json);
                 snprintf(percent, sizeof(percent), "%d%%", (int)((float)steps / total_steps * 100));
+                pthread_mutex_lock(&mutex);
+                strncpy(current_percent, percent, sizeof(current_percent) - 1);
+                current_percent[sizeof(current_percent) - 1] = '\0';
+                pthread_mutex_unlock(&mutex);
             }
 
             printf("Task Status: %s, Task: %s, Prompt: %s, Percent Done: %s\n",
-                   status, task, prompt, percent);
+                   status, task, prompt, current_percent);
 
             json_decref(stream_data);
             stream_data_str = strtok(NULL, "}{");
@@ -771,9 +784,50 @@ int loadLoraData() {
     return 0;
 }
 
+// Function to run image generation in a separate thread
+void* generateImageThread(void* arg) {
+    (void)arg; // Suppress unused parameter warning
+    int result = 1;
+    if (prompt && rand_lora) {
+        result = generate_image(prompt, rand_lora);
+        if (result == 0) {
+            printf("Image generation initiated.\n");
+        } else {
+            printf("Image generation failed.\n");
+        }
+    } else {
+        pthread_mutex_lock(&mutex);
+        snprintf(statusMessage, sizeof(statusMessage), "Prompt or Lora data is not initialized.");
+        pthread_mutex_unlock(&mutex);
+        printf("Prompt or Lora data is not initialized.\n");
+    }
+    pthread_mutex_lock(&mutex);
+    generating = false;
+    pthread_mutex_unlock(&mutex);
+    return NULL;
+}
+
+// Function to run Lora loading in a separate thread
+void* loadLoraDataThread(void* arg) {
+    (void)arg; // Suppress unused parameter warning
+    pthread_mutex_lock(&mutex);
+    snprintf(statusMessage, sizeof(statusMessage), "Loading new Lora...");
+    pthread_mutex_unlock(&mutex);
+    if (loadLoraData() != 0) {
+        printf("Failed to load new Lora data.\n");
+    }
+    return NULL;
+}
+
 int main(void) {
     // Seed the random number generator
     srand(time(NULL));
+
+    // Initialize mutex
+    if (pthread_mutex_init(&mutex, NULL) != 0) {
+        printf("Mutex initialization failed.\n");
+        return 1;
+    }
 
     // Load initial Lora data
     if (loadLoraData() != 0) {
@@ -799,36 +853,64 @@ int main(void) {
         // Check if the generate button is clicked
         if (CheckCollisionPointRec(GetMousePosition(), generateButton) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && !generating) {
             generating = true;
+            pthread_mutex_lock(&mutex);
             snprintf(statusMessage, sizeof(statusMessage), "Generating image...");
-            unloadGeneratedTexture();
+            pthread_mutex_unlock(&mutex);
 
             // Launch image generation in a separate thread
-            int result = 1;
-            if (prompt && rand_lora) {
-                result = generate_image(prompt, rand_lora);
-                if (result == 0) {
-                    printf("Image generation initiated.\n");
-                } else {
-                    printf("Image generation failed.\n");
-                }
-            } else {
-                snprintf(statusMessage, sizeof(statusMessage), "Prompt or Lora data is not initialized.");
-                printf("Prompt or Lora data is not initialized.\n");
+            if (pthread_create(&generateThread, NULL, generateImageThread, NULL) != 0) {
+                pthread_mutex_lock(&mutex);
+                snprintf(statusMessage, sizeof(statusMessage), "Failed to create generation thread.");
+                pthread_mutex_unlock(&mutex);
+                printf("Failed to create generation thread.\n");
+                generating = false;
             }
-            generating = false;
         }
 
         // Check if the new Lora button is clicked
         if (CheckCollisionPointRec(GetMousePosition(), newLoraButton) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && !generating) {
-            snprintf(statusMessage, sizeof(statusMessage), "Loading new Lora...");
-            if (loadLoraData() != 0) {
-                printf("Failed to load new Lora data.\n");
+            // Launch Lora loading in a separate thread
+            if (pthread_create(&loraThread, NULL, loadLoraDataThread, NULL) != 0) {
+                pthread_mutex_lock(&mutex);
+                snprintf(statusMessage, sizeof(statusMessage), "Failed to create Lora loading thread.");
+                pthread_mutex_unlock(&mutex);
+                printf("Failed to create Lora loading thread.\n");
             }
         }
 
         // Drawing
         BeginDrawing();
         ClearBackground(RAYWHITE);
+
+        // Check if the image is ready to be displayed
+        if (imageReady) {
+            pthread_mutex_lock(&mutex);
+            Image image = LoadImageFromMemory(".png", decodedImage, decodedImageSize);
+            if (image.data == NULL) {
+                snprintf(statusMessage, sizeof(statusMessage), "Failed to load image from memory: Image data is NULL.");
+                printf("Failed to load image from memory: Image data is NULL.\n");
+            } else {
+                printf("Image loaded from memory successfully, width: %d, height: %d\n", image.width, image.height);
+
+                // Unload the previous texture if it exists
+                unloadGeneratedTexture();
+                printf("Unloaded generated texture\n");
+
+                generatedTexture = LoadTextureFromImage(image);
+                UnloadImage(image);
+                printf("Texture loaded from image, texture ID: %u\n", generatedTexture.id);
+
+                if (generatedTexture.id == 0) {
+                    snprintf(statusMessage, sizeof(statusMessage), "Failed to load texture from image: Texture ID is 0.");
+                    fprintf(stderr, "Failed to load texture from image: Texture ID is 0.\n");
+                } else {
+                    snprintf(statusMessage, sizeof(statusMessage), "Image generated successfully!");
+                }
+            }
+            freeDecodedImage();
+            imageReady = false;
+            pthread_mutex_unlock(&mutex);
+        }
 
         // Draw the generate button
         DrawRectangleRec(generateButton, SKYBLUE);
@@ -851,15 +933,22 @@ int main(void) {
         }
 
         // Draw Status Message
-        DrawText(statusMessage, 10, screenHeight - 25, 20, GRAY);
+        DrawText(statusMessage, 10, screenHeight - 50, 20, GRAY);
+
+        DrawText(current_percent, 10, screenHeight - 25, 20, BLACK);
 
         EndDrawing();
-    } // Close the main game loop
+    }
 
     // De-Initialization
     unloadGeneratedTexture();
     freeLoraData();
+    freeDecodedImage();
 
     CloseWindow();
+
+    // Destroy mutex
+    pthread_mutex_destroy(&mutex);
+
     return 0;
 }
