@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g
-LIBS = -lcurl -ljansson
+LIBS = -lcurl -ljansson -lraylib
 
 guess_llama: guess_llama.c
 	$(CC) $(CFLAGS) guess_llama.c -o guess_llama $(LIBS)
