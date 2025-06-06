@@ -4,7 +4,6 @@
 #include <curl/curl.h>
 #include <time.h>
 #include <pthread.h>
-#include <pthread.h>
 #include <raylib.h>
 #include <curl/curl.h>
 #include <time.h>
@@ -22,6 +21,10 @@ int currentAnswer = -1; // -1: no answer, 0: no, 1: yes
 // Character selection display string
 char characterSelectionText[256] = {0};
 char playerCharacterString[256] = {0};
+
+char current_percent[8] = { 0 };
+
+pthread_mutex_t mutex;
 
 // Configuration
 const char* username = "USERNAME";                             //Add username Here.
@@ -311,29 +314,31 @@ int generate_image(const char* prompt) {
     }
 
     printf("Task ID: %s\n", task);
+    char image_url[256];
+    snprintf(image_url, sizeof(image_url), "http://%s/image/stream/%s", server_url, task);
+
     json_decref(root);
     free(response);
     free(data);
 
     // Poll for the image
-    char image_url[256];
-    snprintf(image_url, sizeof(image_url), "http://%s/image/stream/%s", server_url, task);
-
+    char ping_url[256];
+    snprintf(ping_url, sizeof(ping_url), "http://%s/ping?session_id=1337", server_url);
+ 
     char* status = strdup("pending");
+    strncpy(current_percent, "0%", sizeof(current_percent) - 1);
+    current_percent[sizeof(current_percent) - 1] = '\0';
+
     while (strcmp(status, "completed") != 0) {
         sleep(5);
 
         // Get the status
-	char ping_url[256];
-    	snprintf(ping_url, sizeof(ping_url), "http://%s/ping?session_id=1337", server_url);
         char* ping_response = make_http_get(ping_url);
         if (!ping_response) {
             fprintf(stderr, "Failed to get ping response from server.\n");
+            free(status);
             return 1;
         }
-
-        // Debug: Print the raw ping response
-        printf("Raw Ping Response: %s\n", ping_response);
 
         // Extract the status string
         char* status_start = strstr(ping_response, "\"status\":\"");
@@ -349,6 +354,7 @@ int generate_image(const char* prompt) {
                 if (extracted_status == NULL) {
                     fprintf(stderr, "Failed to allocate memory for status.\n");
                     free(ping_response);
+                    free(status);
                     return 1;
                 }
 
@@ -372,21 +378,63 @@ int generate_image(const char* prompt) {
         char* stream_response = make_http_get(image_url);
         if (!stream_response) {
             fprintf(stderr, "Failed to get stream response from server.\n");
+            free(status);
             return 1;
         }
 
         // Debug: Print the raw stream response
-        printf("Raw Stream Response: %s\n", stream_response);
+        //printf("Raw Stream Response: %s\n", stream_response);
+
+        // Split the stream response into individual JSON objects
+        char* stream_data_str = strtok(stream_response, "}{");
+        while (stream_data_str != NULL) {
+            // Add back the missing brackets
+            char json_string[2048];
+            snprintf(json_string, sizeof(json_string), "%s%s%s",
+                     stream_data_str[0] == '{' ? "" : "{",
+                     stream_data_str,
+                     stream_data_str[strlen(stream_data_str) - 1] == '}' ? "" : "}");
+
+            // Process the stream data as a single JSON object
+            json_error_t stream_error;
+            json_t* stream_data = json_loads(json_string, 0, &stream_error);
+            if (!stream_data) {
+                //printf("Error parsing JSON: %s\n", stream_error.text);
+                //printf("Response content: %s\n", json_string);
+                stream_data_str = strtok(NULL, "}{");
+                continue;
+            }
+
+            json_t* steps_json = json_object_get(stream_data, "step");
+            json_t* total_steps_json = json_object_get(stream_data, "total_steps");
+
+            if (steps_json && total_steps_json && json_is_number(steps_json) && json_is_number(total_steps_json)) {
+                int steps = json_integer_value(steps_json);
+                int total_steps = json_integer_value(total_steps_json);
+                if (total_steps > 0) { // Prevent division by zero
+                    float percentage = (float)steps / total_steps * 100;
+                    snprintf(current_percent, sizeof(current_percent), "%.0f%%", percentage);
+                    pthread_mutex_lock(&mutex);
+                    memmove(current_percent, current_percent, sizeof(current_percent) - 1);
+                    current_percent[sizeof(current_percent) - 1] = '\0';
+                    pthread_mutex_unlock(&mutex);
+                }
+            }
+
+            json_decref(stream_data);
+            stream_data_str = strtok(NULL, "}{");
+        }
         free(stream_response);
 
-        printf("Task Status: %s, Task: %s, Prompt: %s\n",
-               status, task, prompt);
+        printf("Task Status: %s, Task: %s, Prompt: %s, Percent Done: %s\n",
+               status, task, prompt, current_percent);
     }
 
     // Get the final image
     char* final_stream_response = make_http_get(image_url);
     if (!final_stream_response) {
         fprintf(stderr, "Failed to get final stream response from server.\n");
+        free(status);
         return 1;
     }
 
@@ -686,7 +734,7 @@ int generate_character_image(const char* prompt, int character_number) {
         }
 
         // Debug: Print the raw ping response
-        printf("Raw Ping Response: %s\n", ping_response);
+        //printf("Raw Ping Response: %s\n", ping_response);
 
         // Extract the status string
         char* status_start = strstr(ping_response, "\"status\":\"");
@@ -732,19 +780,56 @@ int generate_character_image(const char* prompt, int character_number) {
             return 1;
         }
 
-        // Debug: Print the raw stream response
-        printf("Raw Stream Response: %s\n", stream_response);
+        // Split the stream response into individual JSON objects
+        char* stream_data_str = strtok(stream_response, "}{");
+        while (stream_data_str != NULL) {
+            // Add back the missing brackets
+            char json_string[2048];
+            snprintf(json_string, sizeof(json_string), "%s%s%s",
+                     stream_data_str[0] == '{' ? "" : "{",
+                     stream_data_str,
+                     stream_data_str[strlen(stream_data_str) - 1] == '}' ? "" : "}");
+
+            // Process the stream data as a single JSON object
+            json_error_t stream_error;
+            json_t* stream_data = json_loads(json_string, 0, &stream_error);
+            if (!stream_data) {
+                //printf("Error parsing JSON: %s\n", stream_error.text);
+                //printf("Response content: %s\n", json_string);
+                stream_data_str = strtok(NULL, "}{");
+                continue;
+            }
+
+            json_t* steps_json = json_object_get(stream_data, "step");
+            //json_t* total_steps_json = json_object_get(stream_data, "total_steps"); //Not needed, hardcoded to 15
+
+            if (steps_json && json_is_number(steps_json)) {
+                int steps = json_integer_value(steps_json);
+                int total_steps = 15; //json_integer_value(total_steps_json); //Hardcoded to 15
+                if (total_steps > 0) { // Prevent division by zero
+                    float percentage = (float)steps / total_steps * 100;
+                    snprintf(current_percent, sizeof(current_percent), "%.0f%%", percentage);
+                    pthread_mutex_lock(&mutex);
+                    memmove(current_percent, current_percent, sizeof(current_percent) - 1);
+                    current_percent[sizeof(current_percent) - 1] = '\0';
+                    pthread_mutex_unlock(&mutex);
+                }
+            }
+
+            json_decref(stream_data);
+            stream_data_str = strtok(NULL, "}{");
+        }
         free(stream_response);
 
-        printf("Task Status: %s, Task: %s, Prompt: %s\n",
-               status, task, prompt);
+        printf("Task Status: %s, Task: %s, Prompt: %s, Percent Done: %s\n",
+               status, task, prompt, current_percent);
     }
 
     // Get the final image
     char* final_stream_response = make_http_get(image_url);
     if (!final_stream_response) {
         fprintf(stderr, "Failed to get final stream response from server.\n");
-	if (task_str) free(task_str);
+        if (task_str) free(task_str);
         free(status);
         return 1;
     }
@@ -755,7 +840,6 @@ int generate_character_image(const char* prompt, int character_number) {
         fprintf(stderr, "Image data not found in JSON response.\n");
         free(final_stream_response);
 	if (task_str) free(task_str);
-        free(status);
         return 1;
     }
 
@@ -768,7 +852,6 @@ int generate_character_image(const char* prompt, int character_number) {
         fprintf(stderr, "End of image data not found in JSON response.\n");
         free(final_stream_response);
 	if (task_str) free(task_str);
-        free(status);
         return 1;
     }
 
@@ -781,7 +864,6 @@ int generate_character_image(const char* prompt, int character_number) {
         fprintf(stderr, "Failed to allocate memory for base64 data.\n");
         free(final_stream_response);
 	if (task_str) free(task_str);
-        free(status);
         return 1;
     }
 
@@ -799,7 +881,6 @@ int generate_character_image(const char* prompt, int character_number) {
         fprintf(stderr, "Base64 decoding failed.\n");
         free(image_data_base64);
 	if (task_str) free(task_str);
-        free(status);
         return 1;
     }
 
@@ -977,7 +1058,7 @@ char** getCharacterFeatures(const char* theme, int* featureCount) {
 
     if (llmResponse != NULL) {
         // Add debug logging: print the raw LLM response
-        //printf("Raw LLM Response: %s\n", llmResponse);
+        printf("Raw LLM Response: %s\n", llmResponse);
 
         // Parse the JSON response
         json_error_t error;
@@ -1413,6 +1494,12 @@ int main() {
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Guess Llama");
     SetTargetFPS(60);
 
+    // Initialize mutex
+    if (pthread_mutex_init(&mutex, NULL) != 0) {
+        fprintf(stderr, "Mutex initialization failed.\n");
+        return 1;
+    }
+
     // Theme input variables
     char theme[100] = {0};
     bool themeEntered = false;
@@ -1463,12 +1550,19 @@ int main() {
         
         ClearBackground(RAYWHITE);
 
-        // Draw character selection text
-        DrawText(characterSelectionText, 10, 10, 20, BLACK);
+            // Drawing
+            BeginDrawing();
 
-        DrawText("Enter a theme:", 100, 70, 20, GRAY);
-        DrawRectangleRec(themeInputBox, LIGHTGRAY);
-        DrawText(theme, themeInputBox.x + 5, themeInputBox.y + 8, 20, BLACK);
+            ClearBackground(RAYWHITE);
+
+            // Draw character selection text
+            DrawText(characterSelectionText, 10, 10, 20, BLACK);
+
+	    DrawText(current_percent, 10, 40, 20, BLACK);
+
+            DrawText("Enter a theme:", 100, 70, 20, GRAY);
+            DrawRectangleRec(themeInputBox, LIGHTGRAY);
+            DrawText(theme, themeInputBox.x + 5, themeInputBox.y + 8, 20, BLACK);
         if (themeInputSelected) {
             DrawRectangleLines(themeInputBox.x, themeInputBox.y, themeInputBox.width, themeInputBox.height, BLUE);
         }
@@ -1657,6 +1751,9 @@ int main() {
 
     free(selectedTheme);
     CloseWindow(); // Close window and OpenGL context
+
+    // Destroy mutex
+    pthread_mutex_destroy(&mutex);
 
     return 0;
 }
