@@ -1307,7 +1307,7 @@ int main() {
         // Game loop
         //int rounds = 5;
         //for (int round = 0; round < rounds; ++round) {
-        llmGuessingRound(characterTraits, llmCharacter, theme, numCharacters, charactersRemaining, &remainingCount);
+        llmGuessingRound(characterTraits, llmCharacter, selectedTheme, numCharacters, charactersRemaining, &remainingCount);
         //}
 
         // Free memory
