@@ -20,6 +20,7 @@ int currentAnswer = -1; // -1: no answer, 0: no, 1: yes
 
 // Character selection display string
 char characterSelectionText[256] = {0};
+char playerCharacterString[256] = {0};
 
 // Configuration
 const char* username = "USERNAME";                             //Add username Here.
@@ -935,8 +936,8 @@ void llmGuessingRound(char*** characterTraits, int llmCharacter, const char* the
             BeginDrawing();
             ClearBackground(RAYWHITE);
 
-            // Draw character selection text
-            DrawText(characterSelectionText, 10, 10, 20, BLACK);
+            // Draw player character string
+            DrawText(playerCharacterString, 10, 10, 20, BLACK);
 
             // Draw the question
             DrawText(currentQuestion, 100, 70, 20, GRAY);
@@ -1121,7 +1122,7 @@ int main() {
     bool themeEntered = false;
     Rectangle themeInputBox = {100, 100, 200, 30};
     bool themeInputSelected = false;
-    Rectangle llmThemeButton = {100, 150, 200, 30};
+    Rectangle llmThemeButton = {320, 100, 200, 30};
     bool llmThemeSelected = false;
 
     // Character selection display string
@@ -1179,6 +1180,10 @@ int main() {
         // LLM Theme Button
         DrawRectangleRec(llmThemeButton, ORANGE);
         DrawText("LLM Random Theme", llmThemeButton.x + 5, llmThemeButton.y + 8, 20, BLACK);
+
+        if (themeEntered) {
+            DrawText("Press SPACE to continue", 100, 150, 20, GRAY);
+        }
 
         EndDrawing();
 
@@ -1276,6 +1281,10 @@ int main() {
         // Assign random character to player
         int playerCharacter = rand() % numCharacters;
         printf("\nYou are character number %d\n", playerCharacter + 1);
+
+        // Construct the player character string
+        snprintf(playerCharacterString, sizeof(playerCharacterString), "Character %d: %s, %s",
+                 playerCharacter + 1, characterTraits[playerCharacter][0], characterTraits[playerCharacter][1]);
         snprintf(characterSelectionText, sizeof(characterSelectionText), "You are character number %d", playerCharacter + 1);
 
         // Assign random character to LLM, making sure it's different from the player's
