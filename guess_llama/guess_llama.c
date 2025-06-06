@@ -249,7 +249,7 @@ char** getCharacterFeatures(const char* theme, int* featureCount) {
 
     if (llmResponse != NULL) {
         // Add debug logging: print the raw LLM response
-        printf("Raw LLM Response: %s\n", llmResponse);
+        //printf("Raw LLM Response: %s\n", llmResponse);
 
         // Parse the JSON response
         json_error_t error;
@@ -296,7 +296,7 @@ char** getCharacterFeatures(const char* theme, int* featureCount) {
         const char* contentStr = json_string_value(content);
 
         // Add debug logging: print the content string
-        printf("Content string: %s\n", contentStr);
+        //printf("Content string: %s\n", contentStr);
 
         // Strip ```json and ``` from the content string
         char* contentStrStripped = strdup(contentStr);
