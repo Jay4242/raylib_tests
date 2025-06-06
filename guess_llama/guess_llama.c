@@ -1121,6 +1121,8 @@ int main() {
     bool themeEntered = false;
     Rectangle themeInputBox = {100, 100, 200, 30};
     bool themeInputSelected = false;
+    Rectangle llmThemeButton = {100, 150, 200, 30};
+    bool llmThemeSelected = false;
 
     // Character selection display string
     char characterSelectionText[256] = {0};
@@ -1161,6 +1163,7 @@ int main() {
 
         // Drawing
         BeginDrawing();
+        
         ClearBackground(RAYWHITE);
 
         // Draw character selection text
@@ -1173,11 +1176,17 @@ int main() {
             DrawRectangleLines(themeInputBox.x, themeInputBox.y, themeInputBox.width, themeInputBox.height, BLUE);
         }
 
-        if (themeEntered) {
-            DrawText("Theme entered! Press SPACE to continue.", 100, 150, 20, GREEN);
-        }
+        // LLM Theme Button
+        DrawRectangleRec(llmThemeButton, ORANGE);
+        DrawText("LLM Random Theme", llmThemeButton.x + 5, llmThemeButton.y + 8, 20, BLACK);
 
         EndDrawing();
+
+        // Check for LLM theme selection
+        if (CheckCollisionPointRec(GetMousePosition(), llmThemeButton) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+            llmThemeSelected = true;
+            break; // Exit the theme input loop
+        }
 
         if (themeEntered && IsKeyPressed(KEY_SPACE)) {
             themeEntered = false;
@@ -1190,8 +1199,31 @@ int main() {
     clearScreen();
 
     // Game logic starts here after theme is entered
-    char* selectedTheme = strdup(theme);
-    printf("Using theme: %s\n", selectedTheme);
+    char* selectedTheme;
+    if (llmThemeSelected) {
+        // Get a random theme from the LLM
+        int themeCount;
+        char** themes = getThemesFromLLM(&themeCount);
+        if (themes != NULL && themeCount > 0) {
+            // Select a random theme from the list
+            int randomIndex = rand() % themeCount;
+            selectedTheme = strdup(themes[randomIndex]);
+            printf("LLM selected theme: %s\n", selectedTheme);
+
+            // Free the memory allocated for the themes
+            for (int i = 0; i < themeCount; i++) {
+                free(themes[i]);
+            }
+            free(themes);
+        } else {
+            // If no themes are returned, use a default theme
+            selectedTheme = strdup("Default");
+            printf("Using default theme: Default\n");
+        }
+    } else {
+        selectedTheme = strdup(theme);
+        printf("Using theme: %s\n", selectedTheme);
+    }
 
     // Get character features based on the theme
     int featureCount;
