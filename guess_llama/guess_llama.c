@@ -4,6 +4,7 @@
 #include <curl/curl.h>
 #include <time.h>
 #include <pthread.h>
+#include <pthread.h>
 #include <raylib.h>
 #include <curl/curl.h>
 #include <time.h>
@@ -220,7 +221,7 @@ int generate_image(const char* prompt) {
                                   "\"used_random_seed\": true, "
                                   "\"negative_prompt\": \"\", "
                                   "\"num_outputs\": 1, "
-                                  "\"num_inference_steps\": 30, "
+                                  "\"num_inference_steps\": 15, "
                                   "\"guidance_scale\": 7.5, "
                                   "\"width\": 512, "
                                   "\"height\": 768, "
@@ -541,6 +542,288 @@ char* getLLMResponse(const char* prompt, double temperature) {
     return response.data;
 }
 
+// Adapted generate_image function for character generation
+int generate_character_image(const char* prompt, int character_number) {
+    char render_url[256];
+    snprintf(render_url, sizeof(render_url), "http://%s/render", server_url);
+    char* data = malloc(4096);
+    if (!data) {
+        fprintf(stderr, "Failed to allocate memory for data.\n");
+        return 1;
+    }
+    int snprintf_result = snprintf(data, 4096,
+                                  "{"
+                                  "\"prompt\": \"%s\", "
+                                  "\"seed\": %u, "
+                                  "\"used_random_seed\": true, "
+                                  "\"negative_prompt\": \"ugly, deformed, bad anatomy, blurry\", " //ADD a negative prompt
+                                  "\"num_outputs\": 1, "
+                                  "\"num_inference_steps\": 15, "
+                                  "\"guidance_scale\": 7.5, "
+                                  "\"width\": 512, "
+                                  "\"height\": 768, "
+                                  "\"vram_usage_level\": \"balanced\", "
+                                  "\"sampler_name\": \"dpmpp_3m_sde\", "
+                                  "\"use_stable_diffusion_model\": \"absolutereality_v181\", "
+                                  "\"clip_skip\": true, "
+                                  "\"use_vae_model\": \"\", "
+                                  "\"stream_progress_updates\": true, " // Set to true to get updates
+                                  "\"stream_image_progress\": false, "
+                                  "\"show_only_filtered_image\": true, "
+                                  "\"block_nsfw\": false, "
+                                  "\"output_format\": \"png\", "
+                                  "\"output_quality\": 75, "
+                                  "\"output_lossless\": false, "
+                                  "\"metadata_output_format\": \"embed,json\", "
+                                  "\"original_prompt\": \"%s\", "
+                                  "\"active_tags\": [], "
+                                  "\"inactive_tags\": [], "
+                                  "\"save_to_disk_path\": \"/home/%s/Pictures/stable-diffusion/output/\", "
+                                  "\"use_lora_model\": [], "
+                                  "\"lora_alpha\": [], "
+                                  "\"enable_vae_tiling\": false, "
+                                  "\"scheduler_name\": \"automatic\", "
+                                  "\"session_id\": \"1337\""
+                                  "} ",
+                                  prompt, get_random_seed(), prompt, username);
+    if (snprintf_result < 0 || snprintf_result >= 4096) {
+        fprintf(stderr, "Error creating data string (truncation detected) %d.\n", snprintf_result);
+        free(data);
+        return 1;
+    }
+
+    char* response = make_http_post(render_url, data);
+    if (!response) {
+        fprintf(stderr, "Failed to get response from server.\n");
+        free(data);
+        return 1;
+    }
+
+    // Parse the JSON response to get the task ID
+    json_error_t error;
+    json_t* root = json_loads(response, 0, &error);
+    if (!root) {
+        fprintf(stderr, "Error parsing JSON: %s\n", error.text);
+        free(response);
+        return 1;
+    }
+
+    json_t* task_json = json_object_get(root, "task");
+    const char* task = NULL;
+    char* task_str = NULL; // Declare task_str here
+    if (!task_json) {
+        fprintf(stderr, "Task ID not found in JSON response.\n");
+        json_decref(root);
+        free(response);
+        free(data);
+        return 1;
+    }
+
+    if (json_is_integer(task_json)) {
+        // Convert the integer task ID to a string
+        long long task_id = json_integer_value(task_json);
+        task_str = malloc(32); // Allocate memory for the string
+        if (!task_str) {
+            fprintf(stderr, "Failed to allocate memory for task ID.\n");
+            json_decref(root);
+            free(response);
+            free(data);
+            return 1;
+        }
+        snprintf(task_str, 32, "%lld", task_id);
+        task = task_str; // Assign the allocated string to task
+    } else if (json_is_string(task_json)) {
+        task = json_string_value(task_json);
+        if (!task) {
+            fprintf(stderr, "Task ID is not a string.\n");
+            json_decref(root);
+            free(response);
+            free(data);
+            return 1;
+        }
+    } else {
+        fprintf(stderr, "Task ID is not a string or integer.\n");
+        json_decref(root);
+        free(response);
+        free(data);
+        return 1;
+    }
+
+    printf("Task ID: %s\n", task);
+    json_decref(root);
+    free(response);
+    free(data);
+
+    // Poll for the image
+    char image_url[256];
+    char ping_url[256];
+    snprintf(image_url, sizeof(image_url), "http://%s/image/stream/%s", server_url, task);
+    snprintf(ping_url, sizeof(ping_url), "http://%s/ping?session_id=1337", server_url);
+
+    char* status = strdup("pending");
+
+    while (strcmp(status, "completed") != 0) {
+        if (strcmp(status, "error") == 0) {
+            fprintf(stderr, "Error occurred during rendering.\n");
+            if (task_str) free(task_str);
+            return 1;
+        }
+
+        if (strcmp(status, "Online") == 0) {
+            printf("Status is Online, generation complete.\n");
+            break;
+        }
+
+        sleep(5);
+
+        // Get the status
+        char* ping_response = make_http_get(ping_url);
+        if (!ping_response) {
+            fprintf(stderr, "Failed to get ping response from server.\n");
+            if (task_str) free(task_str);
+            free(status);
+            return 1;
+        }
+
+        // Debug: Print the raw ping response
+        printf("Raw Ping Response: %s\n", ping_response);
+
+        // Extract the status string
+        char* status_start = strstr(ping_response, "\"status\":\"");
+        if (status_start != NULL) {
+            status_start += strlen("\"status\":\"");
+            char* status_end = strchr(status_start, '"');
+            if (status_end != NULL) {
+                // Calculate the length of the status string
+                size_t status_len = status_end - status_start;
+
+                // Allocate memory for the status string
+                char* extracted_status = (char*)malloc(status_len + 1);
+                if (extracted_status == NULL) {
+                    fprintf(stderr, "Failed to allocate memory for status.\n");
+                    free(ping_response);
+                    if (task_str) free(task_str);
+                    free(status);
+                    return 1;
+                }
+
+                // Copy the status string
+                strncpy(extracted_status, status_start, status_len);
+                extracted_status[status_len] = '\0';
+
+                // Use the extracted status
+                free(status);
+                status = extracted_status;
+                printf("Extracted Status: %s\n", status);
+            } else {
+                printf("Could not find end quote for status.\n");
+            }
+        } else {
+            printf("Could not find status field in ping response.\n");
+        }
+        free(ping_response);
+
+        // Get the stream data
+        char* stream_response = make_http_get(image_url);
+        if (!stream_response) {
+            fprintf(stderr, "Failed to get stream response from server.\n");
+            if (task_str) free(task_str);
+            free(status);
+            return 1;
+        }
+
+        // Debug: Print the raw stream response
+        printf("Raw Stream Response: %s\n", stream_response);
+        free(stream_response);
+
+        printf("Task Status: %s, Task: %s, Prompt: %s\n",
+               status, task, prompt);
+    }
+
+    // Get the final image
+    char* final_stream_response = make_http_get(image_url);
+    if (!final_stream_response) {
+        fprintf(stderr, "Failed to get final stream response from server.\n");
+	if (task_str) free(task_str);
+        free(status);
+        return 1;
+    }
+
+    // Find the start of the base64 image data
+    char* data_start = strstr(final_stream_response, "\"data\":\"data:image/png;base64,");
+    if (!data_start) {
+        fprintf(stderr, "Image data not found in JSON response.\n");
+        free(final_stream_response);
+	if (task_str) free(task_str);
+        free(status);
+        return 1;
+    }
+
+    // Move the pointer to the beginning of the base64 data
+    data_start += strlen("\"data\":\"data:image/png;base64,");
+
+    // Find the end of the base64 data
+    char* data_end = strchr(data_start, '"');
+    if (!data_end) {
+        fprintf(stderr, "End of image data not found in JSON response.\n");
+        free(final_stream_response);
+	if (task_str) free(task_str);
+        free(status);
+        return 1;
+    }
+
+    // Calculate the length of the base64 encoded data
+    size_t image_data_len = data_end - data_start;
+
+    // Allocate memory for the base64 encoded data
+    char* image_data_base64 = malloc(image_data_len + 1);
+    if (!image_data_base64) {
+        fprintf(stderr, "Failed to allocate memory for base64 data.\n");
+        free(final_stream_response);
+	if (task_str) free(task_str);
+        free(status);
+        return 1;
+    }
+
+    // Copy the base64 encoded data
+    strncpy(image_data_base64, data_start, image_data_len);
+    image_data_base64[image_data_len] = '\0';
+
+    // Clean up the original response, as it's no longer needed
+    free(final_stream_response);
+
+    // Decode the base64 image data
+    size_t decoded_size;
+    unsigned char* decoded_data = base64_decode(image_data_base64, image_data_len, &decoded_size);
+    if (!decoded_data) {
+        fprintf(stderr, "Base64 decoding failed.\n");
+        free(image_data_base64);
+	if (task_str) free(task_str);
+        free(status);
+        return 1;
+    }
+
+    // Free the base64 encoded data
+    free(image_data_base64);
+
+    // Save the decoded image data to a file
+    char filename[64];
+    snprintf(filename, sizeof(filename), "character_%d.png", character_number);
+    FILE* fp = fopen(filename, "wb");
+    if (fp) {
+        fwrite(decoded_data, 1, decoded_size, fp);
+        fclose(fp);
+        printf("Image saved to %s\n", filename);
+    } else {
+        fprintf(stderr, "Failed to save image to file.\n");
+    }
+
+    free(decoded_data);
+    if (task_str) free(task_str);
+    free(status);
+    return 0;
+}
+
 // Function to get the theme from the LLM
 char** getThemesFromLLM(int* themeCount) {
     char** themes = NULL;
@@ -661,6 +944,19 @@ char** getThemesFromLLM(int* themeCount) {
     }
 
     return themes;
+}
+
+typedef struct {
+    char* prompt;
+    int character_number;
+} ImageGenData;
+
+void* generateImageThread(void* arg) {
+    ImageGenData* data = (ImageGenData*)arg;
+    generate_character_image(data->prompt, data->character_number);
+    free(data->prompt);
+    free(data);
+    return NULL;
 }
 
 // Function to get character features from the LLM based on the theme
@@ -1276,6 +1572,36 @@ int main() {
                 }
             }
             printf("\n");
+        }
+
+        // Generate images for each character using threads
+        pthread_t threads[numCharacters]; // Array to store thread IDs
+
+        for (int i = 0; i < numCharacters; ++i) {
+            char* prompt;
+            if (asprintf(&prompt, "A character that is a %s, %s, %s.  Cartoon style.", selectedTheme, characterTraits[i][0], characterTraits[i][1]) == -1) {
+                fprintf(stderr, "Failed to construct prompt for character %d\n", i + 1);
+                continue;
+            }
+            printf("Generating image for character %d with prompt: %s\n", i + 1, prompt);
+
+            ImageGenData* data = (ImageGenData*)malloc(sizeof(ImageGenData));
+            if (!data) {
+                fprintf(stderr, "Failed to allocate memory for image generation data.\n");
+                free(prompt);
+                continue;
+            }
+            data->prompt = prompt;
+            data->character_number = i + 1;
+
+            if (pthread_create(&threads[i], NULL, generateImageThread, (void*)data) != 0) {
+                fprintf(stderr, "Failed to create thread for character %d\n", i + 1);
+                free(prompt);
+                free(data);
+            }
+
+            // Wait for the current thread to complete before starting the next
+            pthread_join(threads[i], NULL);
         }
 
         // Assign random character to player
