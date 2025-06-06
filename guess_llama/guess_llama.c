@@ -3,16 +3,447 @@
 #include <string.h>
 #include <curl/curl.h>
 #include <time.h>
+#include <pthread.h>
+#include <raylib.h>
+#include <curl/curl.h>
+#include <time.h>
+#include <unistd.h>
 #include <jansson.h>
 
+// Define screen dimensions
+#define SCREEN_WIDTH 800
+#define SCREEN_HEIGHT 600
+
+// Global variables for yes/no question
+char currentQuestion[256] = {0};
+int currentAnswer = -1; // -1: no answer, 0: no, 1: yes
+
+// Character selection display string
+char characterSelectionText[256] = {0};
+
+// Configuration
+const char* username = "USERNAME";                             //Add username Here.
+const char* server_url = "EASY_DIFFUSION_SERVER_ADDRESS:PORT";         //Add Easy Diffusion Server:Port here.
+
+// Function to strip the port from the server URL
+char* strip_port(const char* url) {
+    char* stripped_url = strdup(url);
+    char* colon = strchr(stripped_url, ':');
+    if (colon != NULL) {
+        *colon = '\0';
+    }
+    return stripped_url;
+}
+
 // Define the LLM server address
-const char* llmServerAddress = "http://localhost:9090";
+const char* llmServerAddress = "http://LLM_SERVER_ADDRESS:PORT";
 
 // Struct to hold the response data
 typedef struct {
     char* data;
     size_t size;
 } ResponseData;
+
+// Callback function to write the response data
+size_t write_callback(char* ptr, size_t size, size_t nmemb, ResponseData* data) {
+    size_t new_size = data->size + size * nmemb;
+    data->data = realloc(data->data, new_size + 1);
+    if (data->data == NULL) {
+        fprintf(stderr, "realloc() failed\n");
+        return 0;
+    }
+    memcpy(data->data + data->size, ptr, size * nmemb);
+    data->data[new_size] = '\0';
+    data->size = new_size;
+    return size * nmemb;
+}
+
+// Base64 decoding table
+static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+// Function to generate a random seed
+unsigned int get_random_seed() {
+    return rand();
+}
+
+// Function to decode base64 data
+unsigned char* base64_decode(const char* data, size_t data_len, size_t* output_len) {
+    size_t i, j;
+
+    if (data_len == 0) {
+        *output_len = 0;
+        return NULL;
+    }
+
+    // Calculate the length of the decoded data
+    size_t padding = 0;
+    if (data_len > 0 && data[data_len - 1] == '=') padding++;
+    if (data_len > 1 && data[data_len - 2] == '=') padding++;
+    *output_len = (data_len * 3) / 4 - padding;
+
+    unsigned char* decoded_data = (unsigned char*)malloc(*output_len);
+    if (decoded_data == NULL) {
+        fprintf(stderr, "malloc() failed\n");
+        return NULL;
+    }
+
+    // Decode the base64 data
+    int val = 0, valb = -8;
+    for (i = 0, j = 0; i < data_len; i++) {
+        unsigned char c = data[i];
+        if (c == '=')
+            break;
+
+        const char* p = strchr(b64_table, c);
+        if (p == NULL)
+            continue;
+
+        int index = p - b64_table;
+        val = (val << 6) | index;
+        valb += 6;
+
+        if (valb >= 0) {
+            decoded_data[j++] = (unsigned char)((val >> valb) & 0xFF);
+            valb -= 8;
+        }
+    }
+
+    return decoded_data;
+}
+
+// Function to make an HTTP GET request using libcurl
+char* make_http_get(const char* url) {
+    CURL* curl;
+    CURLcode res;
+    ResponseData response_data = {NULL, 0};
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl = curl_easy_init();
+    if (curl) {
+        //printf("GET URL: %s\n", url);
+
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_data);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L); // Timeout after 60 seconds
+
+        // Disable SSL verification (equivalent of --insecure)
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+            curl_easy_cleanup(curl);
+            curl_global_cleanup();
+            return NULL;
+        }
+
+        curl_easy_cleanup(curl);
+    }
+    curl_global_cleanup();
+
+    return response_data.data;
+}
+
+// Function to make an HTTP POST request using libcurl
+char* make_http_post(const char* url, const char* data) {
+    CURL* curl;
+    CURLcode res;
+    ResponseData response_data = {NULL, 0};
+    struct curl_slist *headers = NULL;
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl = curl_easy_init();
+    if (curl) {
+        //printf("POST URL: %s\n", url);
+        //printf("POST Data: %s\n", data);
+
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_data);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L); // Timeout after 60 seconds
+
+        // Add headers
+        headers = curl_slist_append(headers, "Accept: */*");
+        headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.9");
+        headers = curl_slist_append(headers, "Cache-Control: no-cache");
+        headers = curl_slist_append(headers, "Connection: keep-alive");
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        //char origin[256];
+        //snprintf(origin, sizeof(origin), "Origin: http://%s", server_url);
+        //headers = curl_slist_append(headers, origin);
+        headers = curl_slist_append(headers, "Pragma: no-cache");
+        //char referer[256];
+        //snprintf(referer, sizeof(referer), "Referer: http://%s/", server_url);
+        //headers = curl_slist_append(headers, referer);
+        headers = curl_slist_append(headers, "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36");
+
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+        // Disable SSL verification (equivalent of --insecure)
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+            curl_easy_cleanup(curl);
+            curl_global_cleanup();
+            if (headers) curl_slist_free_all(headers);
+            return NULL;
+        }
+
+        curl_easy_cleanup(curl);
+    }
+    curl_global_cleanup();
+    if (headers) curl_slist_free_all(headers);
+
+    return response_data.data;
+}
+
+// Function to generate the image using libcurl
+int generate_image(const char* prompt) {
+    char render_url[256];
+    snprintf(render_url, sizeof(render_url), "http://%s/render", server_url);
+    char* data = malloc(4096);
+    if (!data) {
+        fprintf(stderr, "Failed to allocate memory for data.\n");
+        return 1;
+    }
+    int snprintf_result = snprintf(data, 4096,
+                                  "{"
+                                  "\"prompt\": \"%s\", "
+                                  "\"seed\": %u, "
+                                  "\"used_random_seed\": true, "
+                                  "\"negative_prompt\": \"\", "
+                                  "\"num_outputs\": 1, "
+                                  "\"num_inference_steps\": 30, "
+                                  "\"guidance_scale\": 7.5, "
+                                  "\"width\": 512, "
+                                  "\"height\": 768, "
+                                  "\"vram_usage_level\": \"balanced\", "
+                                  "\"sampler_name\": \"dpmpp_3m_sde\", "
+                                  "\"use_stable_diffusion_model\": \"absolutereality_v181\", "
+                                  "\"clip_skip\": true, "
+                                  "\"use_vae_model\": \"\", "
+                                  "\"stream_progress_updates\": true, "
+                                  "\"stream_image_progress\": false, "
+                                  "\"show_only_filtered_image\": true, "
+                                  "\"block_nsfw\": false, "
+                                  "\"output_format\": \"png\", "
+                                  "\"output_quality\": 75, "
+                                  "\"output_lossless\": false, "
+                                  "\"metadata_output_format\": \"embed,json\", "
+                                  "\"original_prompt\": \"%s\", "
+                                  "\"active_tags\": [], "
+                                  "\"inactive_tags\": [], "
+                                  "\"save_to_disk_path\": \"/home/%s/Pictures/stable-diffusion/output/\", "
+                                  "\"use_lora_model\": [], "
+                                  "\"lora_alpha\": [], "
+                                  "\"enable_vae_tiling\": false, "
+                                  "\"scheduler_name\": \"automatic\", "
+                                  "\"session_id\": \"1337\""
+                                  "} ",
+                                  prompt, get_random_seed(), prompt, username);
+    if (snprintf_result < 0 || snprintf_result >= 4096) {
+        fprintf(stderr, "Error creating data string (truncation detected) %d.\n", snprintf_result);
+        free(data);
+        return 1;
+    }
+
+    char* response = make_http_post(render_url, data);
+    if (!response) {
+        fprintf(stderr, "Failed to get response from server.\n");
+        free(data);
+        return 1;
+    }
+
+    // Parse the JSON response to get the task ID
+    json_error_t error;
+    json_t* root = json_loads(response, 0, &error);
+    if (!root) {
+        fprintf(stderr, "Error parsing JSON: %s\n", error.text);
+        free(response);
+        return 1;
+    }
+
+    json_t* task_json = json_object_get(root, "task");
+    const char* task = NULL;
+    if (!task_json) {
+        fprintf(stderr, "Task ID not found in JSON response.\n");
+        json_decref(root);
+        free(response);
+        free(data);
+        return 1;
+    }
+
+    if (json_is_integer(task_json)) {
+        long long task_id = json_integer_value(task_json);
+        char* task_str = malloc(32); // Allocate memory for the string
+        if (!task_str) {
+            fprintf(stderr, "Failed to allocate memory for task ID.\n");
+            json_decref(root);
+            free(response);
+            free(data);
+            return 1;
+        }
+        snprintf(task_str, 32, "%lld", task_id);
+        task = task_str; // Assign the allocated string to task
+    } else if (json_is_string(task_json)) {
+        task = json_string_value(task_json);
+        if (!task) {
+            fprintf(stderr, "Task ID is not a string.\n");
+            json_decref(root);
+            free(response);
+            free(data);
+            return 1;
+        }
+    } else {
+        fprintf(stderr, "Task ID is not a string or integer.\n");
+        json_decref(root);
+        free(response);
+        free(data);
+        return 1;
+    }
+
+    printf("Task ID: %s\n", task);
+    json_decref(root);
+    free(response);
+    free(data);
+
+    // Poll for the image
+    char image_url[256];
+    snprintf(image_url, sizeof(image_url), "http://%s/image/stream/%s", server_url, task);
+
+    char* status = strdup("pending");
+    while (strcmp(status, "completed") != 0) {
+        sleep(5);
+
+        // Get the status
+	char ping_url[256];
+    	snprintf(ping_url, sizeof(ping_url), "http://%s/ping?session_id=1337", server_url);
+        char* ping_response = make_http_get(ping_url);
+        if (!ping_response) {
+            fprintf(stderr, "Failed to get ping response from server.\n");
+            return 1;
+        }
+
+        // Debug: Print the raw ping response
+        printf("Raw Ping Response: %s\n", ping_response);
+
+        // Extract the status string
+        char* status_start = strstr(ping_response, "\"status\":\"");
+        if (status_start != NULL) {
+            status_start += strlen("\"status\":\"");
+            char* status_end = strchr(status_start, '"');
+            if (status_end != NULL) {
+                // Calculate the length of the status string
+                size_t status_len = status_end - status_start;
+
+                // Allocate memory for the status string
+                char* extracted_status = (char*)malloc(status_len + 1);
+                if (extracted_status == NULL) {
+                    fprintf(stderr, "Failed to allocate memory for status.\n");
+                    free(ping_response);
+                    return 1;
+                }
+
+                // Copy the status string
+                strncpy(extracted_status, status_start, status_len);
+                extracted_status[status_len] = '\0';
+
+                // Use the extracted status
+                free(status);
+                status = extracted_status;
+                printf("Extracted Status: %s\n", status);
+            } else {
+                printf("Could not find end quote for status.\n");
+            }
+        } else {
+            printf("Could not find status field in ping response.\n");
+        }
+        free(ping_response);
+
+        // Get the stream data
+        char* stream_response = make_http_get(image_url);
+        if (!stream_response) {
+            fprintf(stderr, "Failed to get stream response from server.\n");
+            return 1;
+        }
+
+        // Debug: Print the raw stream response
+        printf("Raw Stream Response: %s\n", stream_response);
+        free(stream_response);
+
+        printf("Task Status: %s, Task: %s, Prompt: %s\n",
+               status, task, prompt);
+    }
+
+    // Get the final image
+    char* final_stream_response = make_http_get(image_url);
+    if (!final_stream_response) {
+        fprintf(stderr, "Failed to get final stream response from server.\n");
+        return 1;
+    }
+
+    // Find the start of the base64 image data
+    char* data_start = strstr(final_stream_response, "\"data\":\"data:image/png;base64,");
+    if (!data_start) {
+        fprintf(stderr, "Image data not found in JSON response.\n");
+        free(final_stream_response);
+        return 1;
+    }
+
+    // Move the pointer to the beginning of the base64 data
+    data_start += strlen("\"data\":\"data:image/png;base64,");
+
+    // Find the end of the base64 data
+    char* data_end = strchr(data_start, '"');
+    if (!data_end) {
+        fprintf(stderr, "End of image data not found in JSON response.\n");
+        free(final_stream_response);
+        return 1;
+    }
+
+    // Calculate the length of the base64 encoded data
+    size_t image_data_len = data_end - data_start;
+
+    // Allocate memory for the base64 encoded data
+    char* image_data_base64 = malloc(image_data_len + 1);
+    if (!image_data_base64) {
+        fprintf(stderr, "Failed to allocate memory for base64 data.\n");
+        free(final_stream_response);
+        return 1;
+    }
+
+    // Copy the base64 encoded data
+    strncpy(image_data_base64, data_start, image_data_len);
+    image_data_base64[image_data_len] = '\0';
+
+    // Clean up the original response, as it's no longer needed
+    free(final_stream_response);
+
+    // Decode the base64 image data
+    size_t decoded_size;
+    unsigned char* decoded_data = base64_decode(image_data_base64, image_data_len, &decoded_size);
+    if (!decoded_data) {
+        fprintf(stderr, "Base64 decoding failed.\n");
+        free(image_data_base64);
+        return 1;
+    }
+
+    // Free the base64 encoded data
+    free(image_data_base64);
+
+    // Do something with the decoded image data
+    printf("Decoded image size: %zu\n", decoded_size);
+    free(decoded_data);
+
+    free(status);
+    return 0;
+}
 
 // Callback function to write the response data
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
@@ -366,24 +797,11 @@ char** getCharacterFeatures(const char* theme, int* featureCount) {
     return features;
 }
 
-// Function to get yes/no input from the user
-int getYesNoInput(const char* question) {
-    char answer[10];
-    while (1) {
-        printf("%s (yes/no): ", question);
-        if (fgets(answer, sizeof(answer), stdin) == NULL) {
-            return 0;
-        }
-        // Remove trailing newline
-        answer[strcspn(answer, "\n")] = 0;
-        if (strcmp(answer, "yes") == 0) {
-            return 1;
-        } else if (strcmp(answer, "no") == 0) {
-            return 0;
-        } else {
-            printf("Invalid input. Please enter 'yes' or 'no'.\n");
-        }
-    }
+// Function to set the yes/no question
+void setYesNoInput(const char* question) {
+    strncpy(currentQuestion, question, sizeof(currentQuestion) - 1);
+    currentQuestion[sizeof(currentQuestion) - 1] = '\0';
+    currentAnswer = -1; // Reset answer
 }
 
 // Function for the LLM to make a guessing round
@@ -508,13 +926,50 @@ void llmGuessingRound(char*** characterTraits, int llmCharacter, const char* the
 
         const char* question = json_string_value(content);
 
-        // Ask the question to the user
+        // Ask the question to the user (using Raylib GUI)
         printf("LLM asks: %s\n", question);
-        int answer = getYesNoInput("Is this true for your character?");
+        setYesNoInput(question); // Set the question for the GUI
+
+        // Wait for the user to answer
+        while (currentAnswer == -1 && !WindowShouldClose()) {
+            BeginDrawing();
+            ClearBackground(RAYWHITE);
+
+            // Draw character selection text
+            DrawText(characterSelectionText, 10, 10, 20, BLACK);
+
+            // Draw the question
+            DrawText(currentQuestion, 100, 70, 20, GRAY);
+
+            // Draw "Yes" and "No" buttons
+            Rectangle yesButton = {100, 120, 80, 30};
+            Rectangle noButton = {200, 120, 80, 30};
+            DrawRectangleRec(yesButton, GREEN);
+            DrawRectangleRec(noButton, RED);
+            DrawText("Yes", yesButton.x + 20, yesButton.y + 5, 20, WHITE);
+            DrawText("No", noButton.x + 20, noButton.y + 5, 20, WHITE);
+
+            EndDrawing();
+
+            // Check for button presses
+            if (CheckCollisionPointRec(GetMousePosition(), yesButton) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+                currentAnswer = 1;
+            }
+            if (CheckCollisionPointRec(GetMousePosition(), noButton) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+                currentAnswer = 0;
+            }
+        }
+
+        if (WindowShouldClose()) {
+            // Handle window close event
+            json_decref(root);
+            free(llmQuestionResponse);
+            return;
+        }
 
         // Construct the prompt for the LLM to determine which characters to eliminate
         char* eliminationPrompt;
-        const char* answerString = answer ? "yes" : "no";
+        const char* answerString = currentAnswer ? "yes" : "no";
         if (asprintf(&eliminationPrompt, "Given the theme '%s', the question '%s' was asked, and the answer was '%s'.  Given the following list of characters and their traits: %s Which characters should be eliminated? Return a JSON list of integers, only the character numbers and nothing else.", theme, question, answerString, characterList ? characterList : "") == -1) {
             fprintf(stderr, "Failed to construct elimination prompt\n");
             free(characterList);
@@ -644,45 +1099,103 @@ void llmGuessingRound(char*** characterTraits, int llmCharacter, const char* the
     }
 }
 
+// Define screen dimensions
+
+// Function to clear the screen and redraw the background
+void clearScreen() {
+    BeginDrawing();
+    ClearBackground(RAYWHITE);
+    EndDrawing();
+}
+
 int main() {
     // Seed the random number generator
     srand(time(NULL));
 
-    // Prompt for theme
-    char theme[100];
-    printf("Enter a theme for the game (or leave blank for a random theme): ");
-    if (fgets(theme, sizeof(theme), stdin) == NULL) {
-        return 1;
-    }
-    // Remove trailing newline
-    theme[strcspn(theme, "\n")] = 0;
+    // Initialize Raylib window
+    InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Guess Llama");
+    SetTargetFPS(60);
 
-    // If no theme is entered, get one from the LLM
-    if (strlen(theme) == 0) {
-        int themeCount;
-        char** themes = getThemesFromLLM(&themeCount);
-        if (themes != NULL && themeCount > 0) {
-            // Generate a random index to select a theme
-            int randomIndex = rand() % themeCount;
-            strcpy(theme, themes[randomIndex]);
-            printf("Using theme suggested by LLM: %s\n", theme);
+    // Theme input variables
+    char theme[100] = {0};
+    bool themeEntered = false;
+    Rectangle themeInputBox = {100, 100, 200, 30};
+    bool themeInputSelected = false;
 
-            // Free the themes array
-            for (int i = 0; i < themeCount; i++) {
-                free(themes[i]);
+    // Character selection display string
+    char characterSelectionText[256] = {0};
+
+    // Main game loop
+    while (!WindowShouldClose()) {
+        // Handle input
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (CheckCollisionPointRec(GetMousePosition(), themeInputBox)) {
+                themeInputSelected = true;
+            } else {
+                themeInputSelected = false;
             }
-            free(themes);
-        } else {
-            printf("Failed to get theme from LLM, using default theme.\n");
-            strcpy(theme, "Default");
         }
-    } else {
-        printf("Using theme: %s\n", theme);
+
+        int key = GetCharPressed();
+        while (key > 0) {
+            if (themeInputSelected) {
+                int len = strlen(theme);
+                if (key >= 32 && key <= 125 && len < 99) {
+                    theme[len] = (char)key;
+                    theme[len + 1] = '\0';
+                }
+            }
+            key = GetCharPressed();  // Check next character in the queue
+        }
+
+        if (IsKeyPressed(KEY_BACKSPACE) && themeInputSelected) {
+            int len = strlen(theme);
+            if (len > 0) {
+                theme[len - 1] = '\0';
+            }
+        }
+
+        if (IsKeyPressed(KEY_ENTER) && themeInputSelected) {
+            themeEntered = true;
+        }
+
+        // Drawing
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+
+        // Draw character selection text
+        DrawText(characterSelectionText, 10, 10, 20, BLACK);
+
+        DrawText("Enter a theme:", 100, 70, 20, GRAY);
+        DrawRectangleRec(themeInputBox, LIGHTGRAY);
+        DrawText(theme, themeInputBox.x + 5, themeInputBox.y + 8, 20, BLACK);
+        if (themeInputSelected) {
+            DrawRectangleLines(themeInputBox.x, themeInputBox.y, themeInputBox.width, themeInputBox.height, BLUE);
+        }
+
+        if (themeEntered) {
+            DrawText("Theme entered! Press SPACE to continue.", 100, 150, 20, GREEN);
+        }
+
+        EndDrawing();
+
+        if (themeEntered && IsKeyPressed(KEY_SPACE)) {
+            themeEntered = false;
+            themeInputSelected = false;
+            break; // Exit the theme input loop
+        }
     }
+
+    // Clear the screen before starting the game logic
+    clearScreen();
+
+    // Game logic starts here after theme is entered
+    char* selectedTheme = strdup(theme);
+    printf("Using theme: %s\n", selectedTheme);
 
     // Get character features based on the theme
     int featureCount;
-    char** characterFeatures = getCharacterFeatures(theme, &featureCount);
+    char** characterFeatures = getCharacterFeatures(selectedTheme, &featureCount);
 
     if (characterFeatures != NULL && featureCount > 0) {
         printf("Character features:\n");
@@ -731,6 +1244,7 @@ int main() {
         // Assign random character to player
         int playerCharacter = rand() % numCharacters;
         printf("\nYou are character number %d\n", playerCharacter + 1);
+        snprintf(characterSelectionText, sizeof(characterSelectionText), "You are character number %d", playerCharacter + 1);
 
         // Assign random character to LLM, making sure it's different from the player's
         int llmCharacter;
@@ -773,6 +1287,9 @@ int main() {
     } else {
         printf("No character features found.\n");
     }
+
+    free(selectedTheme);
+    CloseWindow(); // Close window and OpenGL context
 
     return 0;
 }
