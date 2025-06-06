@@ -393,7 +393,6 @@ void llmGuessingRound(char*** characterTraits, int llmCharacter, const char* the
     // Construct the prompt for the LLM to formulate a question
     char* questionPrompt;
     char* characterList = NULL;
-    int characterListLength = 0;
 
     // Build a string containing the character traits, excluding the LLM's own character
     for (int i = 0; i < numCharacters; ++i) {
@@ -408,48 +407,43 @@ void llmGuessingRound(char*** characterTraits, int llmCharacter, const char* the
         }
         if (!stillInGame) continue;
 
-        char* characterString;
+        char* characterString = NULL;
         if (asprintf(&characterString, "Character %d: ", i + 1) == -1) {
             fprintf(stderr, "Failed to construct character string\n");
             return;
         }
-        int characterStringLength = strlen(characterString);
 
         for (int j = 0; j < 2; ++j) { // Assuming each character has 2 features
             if (characterTraits[i] != NULL && characterTraits[i][j] != NULL) {
-                characterStringLength += strlen(characterTraits[i][j]);
-                characterStringLength += 2; // For ", "
-
-                char* temp = (char*)realloc(characterString, characterStringLength + 1); // +1 for null terminator
-                if (temp == NULL) {
-                    fprintf(stderr, "Memory reallocation failed\n");
+                char* temp = NULL;
+                if (asprintf(&temp, "%s%s%s", characterString, characterTraits[i][j], (j < 1) ? ", " : "") == -1) {
+                    fprintf(stderr, "Failed to append feature to character string\n");
                     free(characterString);
                     return;
                 }
+                free(characterString);
                 characterString = temp;
-
-                strcat(characterString, characterTraits[i][j]);
-                if (j < 1) {
-                    strcat(characterString, ", ");
-                }
             }
         }
 
         // Append the character string to the character list
+        char* temp2 = NULL;
         if (characterList == NULL) {
-            characterList = strdup(characterString);
-            characterListLength = strlen(characterList);
-        } else {
-            characterListLength += strlen(characterString);
-            char* temp2 = (char*)realloc(characterList, characterListLength + 1); // +1 for null terminator
-            if (temp2 == NULL) {
-                fprintf(stderr, "Memory reallocation failed\n");
-                free(characterList);
+            if (asprintf(&temp2, "%s\\n", characterString) == -1) {
+                fprintf(stderr, "Failed to construct character list\n");
                 free(characterString);
                 return;
             }
             characterList = temp2;
-            strcat(characterList, characterString);
+        } else {
+            if (asprintf(&temp2, "%s%s\\n", characterList, characterString) == -1) {
+                fprintf(stderr, "Failed to append character to character list\n");
+                free(characterString);
+                free(characterList);
+                return;
+            }
+            free(characterList);
+            characterList = temp2;
         }
         free(characterString);
     }
