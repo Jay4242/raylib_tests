@@ -26,6 +26,13 @@ char current_percent[8] = { 0 };
 
 pthread_mutex_t mutex;
 
+// Global variables for image generation status
+bool generating_images = false;
+int total_characters_to_generate = 0;
+int characters_generated_count = 0;
+char generation_status_message[256] = {0};
+pthread_t image_gen_master_thread; // Declare the global thread variable here
+
 // Configuration
 const char* username = "USERNAME";                             //Add username Here.
 const char* server_url = "EASY_DIFFUSION_SERVER_ADDRESS:PORT";         //Add Easy Diffusion Server:Port here.
@@ -208,313 +215,6 @@ char* make_http_post(const char* url, const char* data) {
     return response_data.data;
 }
 
-// Function to generate the image using libcurl
-int generate_image(const char* prompt) {
-    char render_url[256];
-    snprintf(render_url, sizeof(render_url), "http://%s/render", server_url);
-    char* data = malloc(4096);
-    if (!data) {
-        fprintf(stderr, "Failed to allocate memory for data.\n");
-        return 1;
-    }
-    int snprintf_result = snprintf(data, 4096,
-                                  "{"
-                                  "\"prompt\": \"%s\", "
-                                  "\"seed\": %u, "
-                                  "\"used_random_seed\": true, "
-                                  "\"negative_prompt\": \"\", "
-                                  "\"num_outputs\": 1, "
-                                  "\"num_inference_steps\": 15, "
-                                  "\"guidance_scale\": 7.5, "
-                                  "\"width\": 512, "
-                                  "\"height\": 768, "
-                                  "\"vram_usage_level\": \"balanced\", "
-                                  "\"sampler_name\": \"dpmpp_3m_sde\", "
-                                  "\"use_stable_diffusion_model\": \"absolutereality_v181\", "
-                                  "\"clip_skip\": true, "
-                                  "\"use_vae_model\": \"\", "
-                                  "\"stream_progress_updates\": true, "
-                                  "\"stream_image_progress\": false, "
-                                  "\"show_only_filtered_image\": true, "
-                                  "\"block_nsfw\": false, "
-                                  "\"output_format\": \"png\", "
-                                  "\"output_quality\": 75, "
-                                  "\"output_lossless\": false, "
-                                  "\"metadata_output_format\": \"embed,json\", "
-                                  "\"original_prompt\": \"%s\", "
-                                  "\"active_tags\": [], "
-                                  "\"inactive_tags\": [], "
-                                  "\"save_to_disk_path\": \"/home/%s/Pictures/stable-diffusion/output/\", "
-                                  "\"use_lora_model\": [], "
-                                  "\"lora_alpha\": [], "
-                                  "\"enable_vae_tiling\": false, "
-                                  "\"scheduler_name\": \"automatic\", "
-                                  "\"session_id\": \"1337\""
-                                  "} ",
-                                  prompt, get_random_seed(), prompt, username);
-    if (snprintf_result < 0 || snprintf_result >= 4096) {
-        fprintf(stderr, "Error creating data string (truncation detected) %d.\n", snprintf_result);
-        free(data);
-        return 1;
-    }
-
-    char* response = make_http_post(render_url, data);
-    if (!response) {
-        fprintf(stderr, "Failed to get response from server.\n");
-        free(data);
-        return 1;
-    }
-
-    // Parse the JSON response to get the task ID
-    json_error_t error;
-    json_t* root = json_loads(response, 0, &error);
-    if (!root) {
-        fprintf(stderr, "Error parsing JSON: %s\n", error.text);
-        free(response);
-        return 1;
-    }
-
-    json_t* task_json = json_object_get(root, "task");
-    const char* task = NULL;
-    if (!task_json) {
-        fprintf(stderr, "Task ID not found in JSON response.\n");
-        json_decref(root);
-        free(response);
-        free(data);
-        return 1;
-    }
-
-    if (json_is_integer(task_json)) {
-        long long task_id = json_integer_value(task_json);
-        char* task_str = malloc(32); // Allocate memory for the string
-        if (!task_str) {
-            fprintf(stderr, "Failed to allocate memory for task ID.\n");
-            json_decref(root);
-            free(response);
-            free(data);
-            return 1;
-        }
-        snprintf(task_str, 32, "%lld", task_id);
-        task = task_str; // Assign the allocated string to task
-    } else if (json_is_string(task_json)) {
-        task = json_string_value(task_json);
-        if (!task) {
-            fprintf(stderr, "Task ID is not a string.\n");
-            json_decref(root);
-            free(response);
-            free(data);
-            return 1;
-        }
-    } else {
-        fprintf(stderr, "Task ID is not a string or integer.\n");
-        json_decref(root);
-        free(response);
-        free(data);
-        return 1;
-    }
-
-    printf("Task ID: %s\n", task);
-    char image_url[256];
-    snprintf(image_url, sizeof(image_url), "http://%s/image/stream/%s", server_url, task);
-
-    json_decref(root);
-    free(response);
-    free(data);
-
-    // Poll for the image
-    char ping_url[256];
-    snprintf(ping_url, sizeof(ping_url), "http://%s/ping?session_id=1337", server_url);
- 
-    char* status = strdup("pending");
-    strncpy(current_percent, "0%", sizeof(current_percent) - 1);
-    current_percent[sizeof(current_percent) - 1] = '\0';
-
-    while (strcmp(status, "completed") != 0) {
-        sleep(5);
-
-        // Get the status
-        char* ping_response = make_http_get(ping_url);
-        if (!ping_response) {
-            fprintf(stderr, "Failed to get ping response from server.\n");
-            free(status);
-            return 1;
-        }
-
-        // Extract the status string
-        char* status_start = strstr(ping_response, "\"status\":\"");
-        if (status_start != NULL) {
-            status_start += strlen("\"status\":\"");
-            char* status_end = strchr(status_start, '"');
-            if (status_end != NULL) {
-                // Calculate the length of the status string
-                size_t status_len = status_end - status_start;
-
-                // Allocate memory for the status string
-                char* extracted_status = (char*)malloc(status_len + 1);
-                if (extracted_status == NULL) {
-                    fprintf(stderr, "Failed to allocate memory for status.\n");
-                    free(ping_response);
-                    free(status);
-                    return 1;
-                }
-
-                // Copy the status string
-                strncpy(extracted_status, status_start, status_len);
-                extracted_status[status_len] = '\0';
-
-                // Use the extracted status
-                free(status);
-                status = extracted_status;
-                printf("Extracted Status: %s\n", status);
-            } else {
-                printf("Could not find end quote for status.\n");
-            }
-        } else {
-            printf("Could not find status field in ping response.\n");
-        }
-        free(ping_response);
-
-        // Get the stream data
-        char* stream_response = make_http_get(image_url);
-        if (!stream_response) {
-            fprintf(stderr, "Failed to get stream response from server.\n");
-            free(status);
-            return 1;
-        }
-
-        // Debug: Print the raw stream response
-        //printf("Raw Stream Response: %s\n", stream_response);
-
-        // Split the stream response into individual JSON objects
-        char* stream_data_str = strtok(stream_response, "}{");
-        while (stream_data_str != NULL) {
-            // Add back the missing brackets
-            char json_string[2048];
-            snprintf(json_string, sizeof(json_string), "%s%s%s",
-                     stream_data_str[0] == '{' ? "" : "{",
-                     stream_data_str,
-                     stream_data_str[strlen(stream_data_str) - 1] == '}' ? "" : "}");
-
-            // Process the stream data as a single JSON object
-            json_error_t stream_error;
-            json_t* stream_data = json_loads(json_string, 0, &stream_error);
-            if (!stream_data) {
-                //printf("Error parsing JSON: %s\n", stream_error.text);
-                //printf("Response content: %s\n", json_string);
-                stream_data_str = strtok(NULL, "}{");
-                continue;
-            }
-
-            json_t* steps_json = json_object_get(stream_data, "step");
-            json_t* total_steps_json = json_object_get(stream_data, "total_steps");
-
-            if (steps_json && total_steps_json && json_is_number(steps_json) && json_is_number(total_steps_json)) {
-                int steps = json_integer_value(steps_json);
-                int total_steps = json_integer_value(total_steps_json);
-                if (total_steps > 0) { // Prevent division by zero
-                    float percentage = (float)steps / total_steps * 100;
-                    snprintf(current_percent, sizeof(current_percent), "%.0f%%", percentage);
-                    pthread_mutex_lock(&mutex);
-                    memmove(current_percent, current_percent, sizeof(current_percent) - 1);
-                    current_percent[sizeof(current_percent) - 1] = '\0';
-                    pthread_mutex_unlock(&mutex);
-                }
-            }
-
-            json_decref(stream_data);
-            stream_data_str = strtok(NULL, "}{");
-        }
-        free(stream_response);
-
-        printf("Task Status: %s, Task: %s, Prompt: %s, Percent Done: %s\n",
-               status, task, prompt, current_percent);
-    }
-
-    // Get the final image
-    char* final_stream_response = make_http_get(image_url);
-    if (!final_stream_response) {
-        fprintf(stderr, "Failed to get final stream response from server.\n");
-        free(status);
-        return 1;
-    }
-
-    // Find the start of the base64 image data
-    char* data_start = strstr(final_stream_response, "\"data\":\"data:image/png;base64,");
-    if (!data_start) {
-        fprintf(stderr, "Image data not found in JSON response.\n");
-        free(final_stream_response);
-        return 1;
-    }
-
-    // Move the pointer to the beginning of the base64 data
-    data_start += strlen("\"data\":\"data:image/png;base64,");
-
-    // Find the end of the base64 data
-    char* data_end = strchr(data_start, '"');
-    if (!data_end) {
-        fprintf(stderr, "End of image data not found in JSON response.\n");
-        free(final_stream_response);
-        return 1;
-    }
-
-    // Calculate the length of the base64 encoded data
-    size_t image_data_len = data_end - data_start;
-
-    // Allocate memory for the base64 encoded data
-    char* image_data_base64 = malloc(image_data_len + 1);
-    if (!image_data_base64) {
-        fprintf(stderr, "Failed to allocate memory for base64 data.\n");
-        free(final_stream_response);
-        return 1;
-    }
-
-    // Copy the base64 encoded data
-    strncpy(image_data_base64, data_start, image_data_len);
-    image_data_base64[image_data_len] = '\0';
-
-    // Clean up the original response, as it's no longer needed
-    free(final_stream_response);
-
-    // Decode the base64 image data
-    size_t decoded_size;
-    unsigned char* decoded_data = base64_decode(image_data_base64, image_data_len, &decoded_size);
-    if (!decoded_data) {
-        fprintf(stderr, "Base64 decoding failed.\n");
-        free(image_data_base64);
-        return 1;
-    }
-
-    // Free the base64 encoded data
-    free(image_data_base64);
-
-    // Do something with the decoded image data
-    printf("Decoded image size: %zu\n", decoded_size);
-    free(decoded_data);
-
-    free(status);
-    return 0;
-}
-
-// Callback function to write the response data
-size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
-    size_t totalSize = size * nmemb;
-    ResponseData* response = (ResponseData*)userp;
-
-    // Reallocate memory to accommodate the new data
-    char* newData = realloc(response->data, response->size + totalSize + 1);
-    if (!newData) {
-        fprintf(stderr, "Memory allocation failed\n");
-        return 0; // Indicate an error
-    }
-
-    response->data = newData;
-    memcpy(&(response->data[response->size]), contents, totalSize);
-    response->size += totalSize;
-    response->data[response->size] = 0; // Null-terminate the string
-
-    return totalSize;
-}
-
 // Function to make a request to the LLM API
 char* getLLMResponse(const char* prompt, double temperature) {
     CURL* curl;
@@ -555,7 +255,7 @@ char* getLLMResponse(const char* prompt, double temperature) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(data));
 
         // Set the callback function to write the response
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback); // Use write_callback
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 
         // Set the content type to application/json
@@ -589,6 +289,7 @@ char* getLLMResponse(const char* prompt, double temperature) {
 
     return response.data;
 }
+
 
 // Adapted generate_image function for character generation
 int generate_character_image(const char* prompt, int character_number) {
@@ -794,24 +495,20 @@ int generate_character_image(const char* prompt, int character_number) {
             json_error_t stream_error;
             json_t* stream_data = json_loads(json_string, 0, &stream_error);
             if (!stream_data) {
-                //printf("Error parsing JSON: %s\n", stream_error.text);
-                //printf("Response content: %s\n", json_string);
                 stream_data_str = strtok(NULL, "}{");
                 continue;
             }
 
             json_t* steps_json = json_object_get(stream_data, "step");
-            //json_t* total_steps_json = json_object_get(stream_data, "total_steps"); //Not needed, hardcoded to 15
+            json_t* total_steps_json = json_object_get(stream_data, "total_steps");
 
-            if (steps_json && json_is_number(steps_json)) {
+            if (steps_json && total_steps_json && json_is_number(steps_json) && json_is_number(total_steps_json)) {
                 int steps = json_integer_value(steps_json);
-                int total_steps = 15; //json_integer_value(total_steps_json); //Hardcoded to 15
+                int total_steps = json_integer_value(total_steps_json);
                 if (total_steps > 0) { // Prevent division by zero
                     float percentage = (float)steps / total_steps * 100;
-                    snprintf(current_percent, sizeof(current_percent), "%.0f%%", percentage);
                     pthread_mutex_lock(&mutex);
-                    memmove(current_percent, current_percent, sizeof(current_percent) - 1);
-                    current_percent[sizeof(current_percent) - 1] = '\0';
+                    snprintf(current_percent, sizeof(current_percent), "%.0f%%", percentage);
                     pthread_mutex_unlock(&mutex);
                 }
             }
@@ -903,6 +600,55 @@ int generate_character_image(const char* prompt, int character_number) {
     if (task_str) free(task_str);
     free(status);
     return 0;
+}
+
+// Struct to hold data for a single image generation task
+typedef struct {
+    char* prompt;
+    int character_number;
+} SingleImageGenData;
+
+// Struct to hold data for batch image generation
+typedef struct {
+    SingleImageGenData* images_data; // Array of prompts and character numbers
+    int num_images;
+} BatchImageGenData;
+
+// Function to run image generation in a separate thread
+void* generateImageThread(void* arg) {
+    BatchImageGenData* batch_data = (BatchImageGenData*)arg;
+
+    pthread_mutex_lock(&mutex);
+    generating_images = true;
+    total_characters_to_generate = batch_data->num_images;
+    characters_generated_count = 0;
+    pthread_mutex_unlock(&mutex);
+
+    for (int i = 0; i < batch_data->num_images; ++i) {
+        pthread_mutex_lock(&mutex);
+        characters_generated_count = i + 1; // Update count for display
+        snprintf(generation_status_message, sizeof(generation_status_message),
+                 "Generating image %d of %d...", characters_generated_count, total_characters_to_generate);
+        current_percent[0] = '\0'; // Clear percentage
+        pthread_mutex_unlock(&mutex);
+
+        SingleImageGenData* current_image_data = &batch_data->images_data[i];
+        generate_character_image(current_image_data->prompt, current_image_data->character_number);
+
+        // Free prompt after use
+        free(current_image_data->prompt);
+    }
+
+    pthread_mutex_lock(&mutex);
+    generating_images = false;
+    snprintf(generation_status_message, sizeof(generation_status_message), "Image generation complete!");
+    current_percent[0] = '\0'; // Clear percentage
+    pthread_mutex_unlock(&mutex);
+
+    // Free the array of SingleImageGenData itself, but not the prompts within it, as they were freed above.
+    free(batch_data->images_data);
+    free(batch_data);
+    return NULL;
 }
 
 // Function to get the theme from the LLM
@@ -1027,19 +773,6 @@ char** getThemesFromLLM(int* themeCount) {
     return themes;
 }
 
-typedef struct {
-    char* prompt;
-    int character_number;
-} ImageGenData;
-
-void* generateImageThread(void* arg) {
-    ImageGenData* data = (ImageGenData*)arg;
-    generate_character_image(data->prompt, data->character_number);
-    free(data->prompt);
-    free(data);
-    return NULL;
-}
-
 // Function to get character features from the LLM based on the theme
 char** getCharacterFeatures(const char* theme, int* featureCount) {
     char** features = NULL;
@@ -1073,6 +806,7 @@ char** getCharacterFeatures(const char* theme, int* featureCount) {
         json_t* choices = json_object_get(root, "choices");
         if (!json_is_array(choices) || json_array_size(choices) == 0) {
             fprintf(stderr, "Error: 'choices' is not a non-empty array.\n");
+            fprintf(stderr, "Raw LLM Response: %s\n", llmResponse); // Print the raw response for debugging
             json_decref(root);
             free(llmResponse);
             return NULL;
@@ -1477,8 +1211,6 @@ void llmGuessingRound(char*** characterTraits, int llmCharacter, const char* the
     }
 }
 
-// Define screen dimensions
-
 // Function to clear the screen and redraw the background
 void clearScreen() {
     BeginDrawing();
@@ -1508,11 +1240,8 @@ int main() {
     Rectangle llmThemeButton = {320, 100, 200, 30};
     bool llmThemeSelected = false;
 
-    // Character selection display string
-    char characterSelectionText[256] = {0};
-
-    // Main game loop
-    while (!WindowShouldClose()) {
+    // Main game loop for theme selection
+    while (!WindowShouldClose() && !themeEntered && !llmThemeSelected) {
         // Handle input
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             if (CheckCollisionPointRec(GetMousePosition(), themeInputBox)) {
@@ -1545,24 +1274,18 @@ int main() {
             themeEntered = true;
         }
 
+        // Check for LLM theme selection
+        if (CheckCollisionPointRec(GetMousePosition(), llmThemeButton) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+            llmThemeSelected = true;
+        }
+
         // Drawing
         BeginDrawing();
-        
         ClearBackground(RAYWHITE);
 
-            // Drawing
-            BeginDrawing();
-
-            ClearBackground(RAYWHITE);
-
-            // Draw character selection text
-            DrawText(characterSelectionText, 10, 10, 20, BLACK);
-
-	    DrawText(current_percent, 10, 40, 20, BLACK);
-
-            DrawText("Enter a theme:", 100, 70, 20, GRAY);
-            DrawRectangleRec(themeInputBox, LIGHTGRAY);
-            DrawText(theme, themeInputBox.x + 5, themeInputBox.y + 8, 20, BLACK);
+        DrawText("Enter a theme:", 100, 70, 20, GRAY);
+        DrawRectangleRec(themeInputBox, LIGHTGRAY);
+        DrawText(theme, themeInputBox.x + 5, themeInputBox.y + 8, 20, BLACK);
         if (themeInputSelected) {
             DrawRectangleLines(themeInputBox.x, themeInputBox.y, themeInputBox.width, themeInputBox.height, BLUE);
         }
@@ -1577,15 +1300,7 @@ int main() {
 
         EndDrawing();
 
-        // Check for LLM theme selection
-        if (CheckCollisionPointRec(GetMousePosition(), llmThemeButton) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
-            llmThemeSelected = true;
-            break; // Exit the theme input loop
-        }
-
         if (themeEntered && IsKeyPressed(KEY_SPACE)) {
-            themeEntered = false;
-            themeInputSelected = false;
             break; // Exit the theme input loop
         }
     }
@@ -1668,34 +1383,78 @@ int main() {
             printf("\n");
         }
 
-        // Generate images for each character using threads
-        pthread_t threads[numCharacters]; // Array to store thread IDs
+        // Prepare data for the single image generation thread
+        BatchImageGenData* batch_data = (BatchImageGenData*)malloc(sizeof(BatchImageGenData));
+        if (!batch_data) {
+            fprintf(stderr, "Failed to allocate memory for batch image generation data.\n");
+            // Free characterTraits and characterFeatures before returning
+            for (int i = 0; i < numCharacters; ++i) {
+                for (int j = 0; j < 2; ++j) free(characterTraits[i][j]);
+                free(characterTraits[i]);
+            }
+            free(characterTraits);
+            for (int i = 0; i < featureCount; i++) free(characterFeatures[i]);
+            free(characterFeatures);
+            free(selectedTheme);
+            return 1;
+        }
+        batch_data->num_images = numCharacters;
+        batch_data->images_data = (SingleImageGenData*)malloc(numCharacters * sizeof(SingleImageGenData));
+        if (!batch_data->images_data) {
+            fprintf(stderr, "Failed to allocate memory for images_data array.\n");
+            free(batch_data);
+            // Free characterTraits and characterFeatures before returning
+            for (int i = 0; i < numCharacters; ++i) {
+                for (int j = 0; j < 2; ++j) free(characterTraits[i][j]);
+                free(characterTraits[i]);
+            }
+            free(characterTraits);
+            for (int i = 0; i < featureCount; i++) free(characterFeatures[i]);
+            free(characterFeatures);
+            free(selectedTheme);
+            return 1;
+        }
 
         for (int i = 0; i < numCharacters; ++i) {
             char* prompt;
-            if (asprintf(&prompt, "A character that is a %s, %s, %s.  Cartoon style.", selectedTheme, characterTraits[i][0], characterTraits[i][1]) == -1) {
+            if (asprintf(&prompt, "A character that is a %s, %s, %s. Cartoon style.", selectedTheme, characterTraits[i][0], characterTraits[i][1]) == -1) {
                 fprintf(stderr, "Failed to construct prompt for character %d\n", i + 1);
-                continue;
+                // Free previously allocated prompts in batch_data->images_data
+                for (int j = 0; j < i; ++j) free(batch_data->images_data[j].prompt);
+                free(batch_data->images_data);
+                free(batch_data);
+                // Free characterTraits and characterFeatures before returning
+                for (int k = 0; k < numCharacters; ++k) {
+                    for (int l = 0; l < 2; ++l) free(characterTraits[k][l]);
+                    free(characterTraits[k]);
+                }
+                free(characterTraits);
+                for (int k = 0; k < featureCount; k++) free(characterFeatures[k]);
+                free(characterFeatures);
+                free(selectedTheme);
+                return 1;
             }
-            printf("Generating image for character %d with prompt: %s\n", i + 1, prompt);
+            batch_data->images_data[i].prompt = prompt;
+            batch_data->images_data[i].character_number = i + 1;
+        }
 
-            ImageGenData* data = (ImageGenData*)malloc(sizeof(ImageGenData));
-            if (!data) {
-                fprintf(stderr, "Failed to allocate memory for image generation data.\n");
-                free(prompt);
-                continue;
+        // Launch the single image generation thread
+        if (pthread_create(&image_gen_master_thread, NULL, generateImageThread, (void*)batch_data) != 0) {
+            fprintf(stderr, "Failed to create master image generation thread.\n");
+            // Free all prompts and batch_data
+            for (int i = 0; i < numCharacters; ++i) free(batch_data->images_data[i].prompt);
+            free(batch_data->images_data);
+            free(batch_data);
+            // Free characterTraits and characterFeatures before returning
+            for (int i = 0; i < numCharacters; ++i) {
+                for (int j = 0; j < 2; ++j) free(characterTraits[i][j]);
+                free(characterTraits[i]);
             }
-            data->prompt = prompt;
-            data->character_number = i + 1;
-
-            if (pthread_create(&threads[i], NULL, generateImageThread, (void*)data) != 0) {
-                fprintf(stderr, "Failed to create thread for character %d\n", i + 1);
-                free(prompt);
-                free(data);
-            }
-
-            // Wait for the current thread to complete before starting the next
-            pthread_join(threads[i], NULL);
+            free(characterTraits);
+            for (int i = 0; i < featureCount; i++) free(characterFeatures[i]);
+            free(characterFeatures);
+            free(selectedTheme);
+            return 1;
         }
 
         // Assign random character to player
@@ -1724,11 +1483,35 @@ int main() {
             charactersRemaining[i] = i;
         }
 
-        // Game loop
-        //int rounds = 5;
-        //for (int round = 0; round < rounds; ++round) {
-        llmGuessingRound(characterTraits, llmCharacter, selectedTheme, numCharacters, charactersRemaining, &remainingCount);
-        //}
+        // Main game loop (after image generation starts)
+        while (!WindowShouldClose()) {
+            // Drawing
+            BeginDrawing();
+            ClearBackground(RAYWHITE);
+
+            pthread_mutex_lock(&mutex);
+            if (generating_images) {
+                DrawText(generation_status_message, 10, 10, 20, BLACK);
+                DrawText(current_percent, 10, 40, 20, BLACK);
+            } else {
+                // Once generation is complete, show player character info and game elements
+                DrawText(playerCharacterString, 10, 10, 20, BLACK);
+                // Example: Draw a button to start the LLM guessing round
+                Rectangle startGuessingButton = {10, 70, 200, 30};
+                DrawRectangleRec(startGuessingButton, BLUE);
+                DrawText("Start Guessing Round", startGuessingButton.x + 5, startGuessingButton.y + 8, 20, WHITE);
+
+                if (CheckCollisionPointRec(GetMousePosition(), startGuessingButton) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+                    llmGuessingRound(characterTraits, llmCharacter, selectedTheme, numCharacters, charactersRemaining, &remainingCount);
+                }
+            }
+            pthread_mutex_unlock(&mutex);
+
+            EndDrawing();
+        }
+
+        // After Raylib loop, wait for the master image generation thread to finish
+        pthread_join(image_gen_master_thread, NULL);
 
         // Free memory
         for (int i = 0; i < numCharacters; ++i) {
@@ -1745,6 +1528,7 @@ int main() {
             free(characterFeatures[i]);
         }
         free(characterFeatures);
+        free(charactersRemaining);
     } else {
         printf("No character features found.\n");
     }
