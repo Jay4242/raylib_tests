@@ -11,10 +11,10 @@ typedef enum GameScreen { MENU = 0, SET_SELECTION, QUIZ, EDITOR } GameScreen;
 #define MAX_TEXT_LENGTH 256
 
 // Max number of flashcards per set
-#define MAX_FLASHCARDS_PER_SET 100
+#define MAX_FLASHCARDS_PER_SET 500
 
 // Max number of flashcard sets
-#define MAX_SETS 10
+#define MAX_SETS 50
 
 // Flashcard structure
 typedef struct Flashcard {
@@ -48,7 +48,7 @@ void ShuffleArray(int *arr, int n) {
     }
 }
 
-// Function to load flashcards from flashcards.json
+// Function to load flashcards from flashcards.cards
 // Custom format:
 // #SET:Set Name
 // Front Text|Back Text
@@ -57,7 +57,7 @@ void ShuffleArray(int *arr, int n) {
 void LoadFlashcards(const char *fileName) {
     FILE *file = fopen(fileName, "r");
     if (file == NULL) {
-        TraceLog(LOG_WARNING, "flashcards.json not found. Starting with empty sets.");
+        TraceLog(LOG_WARNING, "%s not found. Starting with empty sets.", fileName);
         return;
     }
 
@@ -116,7 +116,7 @@ void LoadFlashcards(const char *fileName) {
     }
 }
 
-// Function to save flashcards to flashcards.json
+// Function to save flashcards to flashcards.cards
 void SaveFlashcards(const char *fileName) {
     FILE *file = fopen(fileName, "w");
     if (file == NULL) {
@@ -146,7 +146,7 @@ int main(void)
     InitWindow(screenWidth, screenHeight, "Flashcards GUI");
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
 
-    LoadFlashcards("flashcards.json"); // Load flashcards at startup
+    LoadFlashcards("flashcards.cards"); // Load flashcards at startup
 
     GameScreen currentScreen = MENU; // Initial game state
 
@@ -956,7 +956,7 @@ int main(void)
 
     // De-Initialization
     //--------------------------------------------------------------------------------------
-    SaveFlashcards("flashcards.json"); // Save flashcards before closing
+    SaveFlashcards("flashcards.cards"); // Save flashcards before closing
     CloseWindow();        // Close window and unload OpenGL context
     //--------------------------------------------------------------------------------------
 
