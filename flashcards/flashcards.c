@@ -177,7 +177,7 @@ int main(void)
     Rectangle deleteSetButton = { startX + SET_SELECTION_BOTTOM_BUTTON_WIDTH + SET_SELECTION_BOTTOM_BUTTON_SPACING, bottomButtonY, SET_SELECTION_BOTTOM_BUTTON_WIDTH, SET_SELECTION_BOTTOM_BUTTON_HEIGHT };
     Rectangle setSelectionBackToMenuButton = { startX + 2 * (SET_SELECTION_BOTTOM_BUTTON_WIDTH + SET_SELECTION_BOTTOM_BUTTON_SPACING), bottomButtonY, SET_SELECTION_BOTTOM_BUTTON_WIDTH, SET_SELECTION_BOTTOM_BUTTON_HEIGHT };
 
-    Rectangle setListRec = { screenWidth/2 - (screenWidth - 80)/2, 230, screenWidth - 80, bottomButtonY - 230 - 20 }; // Space for new buttons at bottom
+    // setListRec will be calculated dynamically in SET_SELECTION case
     float setListScrollOffset = 0.0f;
     const int SET_DISPLAY_FONT_SIZE = 20;
 
@@ -284,36 +284,37 @@ int main(void)
             {
                 Vector2 mousePoint = GetMousePosition();
 
-                // Handle new set name input
-                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                    if (CheckCollisionPointRec(mousePoint, newSetTextBox)) {
-                        newSetNameActive = true;
-                    } else {
-                        newSetNameActive = false;
-                    }
-                }
-
-                if (newSetNameActive) {
-                    int key = GetCharPressed();
-                    while (key > 0) {
-                        if ((key >= 32) && (key <= 125) && (newSetNameTextLength < MAX_TEXT_LENGTH - 1)) {
-                            newSetNameText[newSetNameTextLength] = (char)key;
-                            newSetNameTextLength++;
-                            newSetNameText[newSetNameTextLength] = '\0';
-                        }
-                        key = GetCharPressed();
-                    }
-                    if (IsKeyPressed(KEY_BACKSPACE)) {
-                        if (newSetNameTextLength > 0) {
-                            newSetNameTextLength--;
-                            newSetNameText[newSetNameTextLength] = '\0';
+                // Conditionally handle new set name input and create button
+                if (nextScreenAfterSetSelection == EDITOR) {
+                    // Handle new set name input
+                    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                        if (CheckCollisionPointRec(mousePoint, newSetTextBox)) {
+                            newSetNameActive = true;
+                        } else {
+                            newSetNameActive = false;
                         }
                     }
-                }
 
-                // Handle button clicks
-                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                    if (CheckCollisionPointRec(mousePoint, createSetButton)) {
+                    if (newSetNameActive) {
+                        int key = GetCharPressed();
+                        while (key > 0) {
+                            if ((key >= 32) && (key <= 125) && (newSetNameTextLength < MAX_TEXT_LENGTH - 1)) {
+                                newSetNameText[newSetNameTextLength] = (char)key;
+                                newSetNameTextLength++;
+                                newSetNameText[newSetNameTextLength] = '\0';
+                            }
+                            key = GetCharPressed();
+                        }
+                        if (IsKeyPressed(KEY_BACKSPACE)) {
+                            if (newSetNameTextLength > 0) {
+                                newSetNameTextLength--;
+                                newSetNameText[newSetNameTextLength] = '\0';
+                            }
+                        }
+                    }
+
+                    // Handle create set button click
+                    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(mousePoint, createSetButton)) {
                         if (newSetNameTextLength > 0 && setCount < MAX_SETS) {
                             // Check if set name already exists
                             bool nameExists = false;
@@ -336,14 +337,33 @@ int main(void)
                                 newSetNameText[0] = '\0'; // Clear input
                                 newSetNameTextLength = 0;
                                 newSetNameActive = false;
-                                // Do not immediately go to next screen, user might want to create more or select another
                             }
                         } else if (setCount >= MAX_SETS) {
                             TraceLog(LOG_WARNING, "Max sets reached (%d). Cannot create more.", MAX_SETS);
                         } else {
                             TraceLog(LOG_WARNING, "Set name cannot be empty.");
                         }
-                    } else if (CheckCollisionPointRec(mousePoint, setSelectionBackToMenuButton)) {
+                    }
+                }
+
+                // Calculate setListDisplayRec based on context
+                Rectangle setListDisplayRec;
+                float listY;
+                float listHeight;
+
+                if (nextScreenAfterSetSelection == EDITOR) {
+                    listY = 230;
+                    listHeight = bottomButtonY - 230 - 20;
+                } else { // nextScreenAfterSetSelection == QUIZ
+                    listY = 80; // Move up
+                    listHeight = bottomButtonY - 80 - 20; // Adjust height
+                }
+                setListDisplayRec = (Rectangle){ screenWidth/2 - (screenWidth - 80)/2, listY, screenWidth - 80, listHeight };
+
+
+                // Handle button clicks
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    if (CheckCollisionPointRec(mousePoint, setSelectionBackToMenuButton)) {
                         currentScreen = MENU;
                     } else if (CheckCollisionPointRec(mousePoint, selectSetButton)) {
                         if (highlightedSetIndex != -1 && highlightedSetIndex < setCount) {
@@ -354,7 +374,7 @@ int main(void)
                             TraceLog(LOG_WARNING, "No set highlighted to select.");
                         }
                     } else if (CheckCollisionPointRec(mousePoint, deleteSetButton)) {
-                        if (highlightedSetIndex != -1 && highlightedSetIndex < setCount) {
+                        if (highlightedSetIndex != -1 && highlightedSetIndex < setCount && nextScreenAfterSetSelection == EDITOR) { // Only allow deletion in EDITOR mode
                             TraceLog(LOG_INFO, "Deleting set: %s", sets[highlightedSetIndex].name);
                             // Shift sets
                             for (int j = highlightedSetIndex; j < setCount - 1; j++) {
@@ -376,19 +396,19 @@ int main(void)
                             // Adjust scroll offset if content height changes
                             float itemHeight = SET_DISPLAY_FONT_SIZE + 10;
                             float totalContentHeight = setCount * itemHeight;
-                            float maxScrollOffset = totalContentHeight - setListRec.height;
+                            float maxScrollOffset = totalContentHeight - setListDisplayRec.height; // Use setListDisplayRec.height
                             if (maxScrollOffset < 0) maxScrollOffset = 0;
                             if (setListScrollOffset > maxScrollOffset) setListScrollOffset = maxScrollOffset;
                         } else {
-                            TraceLog(LOG_WARNING, "No set highlighted to delete.");
+                            TraceLog(LOG_WARNING, "No set highlighted to delete or deletion not allowed in this mode.");
                         }
-                    } else if (CheckCollisionPointRec(mousePoint, setListRec)) {
+                    } else if (CheckCollisionPointRec(mousePoint, setListDisplayRec)) { // Use setListDisplayRec
                         // Check for set highlighting
                         float itemHeight = SET_DISPLAY_FONT_SIZE + 10; // Height of each set item + padding
                         int clickedItem = -1;
                         for (int i = 0; i < setCount; i++) {
-                            float itemY = setListRec.y + (i * itemHeight) - setListScrollOffset;
-                            Rectangle itemClickRec = { setListRec.x, itemY, setListRec.width, itemHeight };
+                            float itemY = setListDisplayRec.y + (i * itemHeight) - setListScrollOffset; // Use setListDisplayRec.y
+                            Rectangle itemClickRec = { setListDisplayRec.x, itemY, setListDisplayRec.width, itemHeight }; // Use setListDisplayRec.x and .width
 
                             if (CheckCollisionPointRec(mousePoint, itemClickRec)) {
                                 clickedItem = i;
@@ -400,12 +420,12 @@ int main(void)
                 }
 
                 // Handle scrolling for the set list
-                if (CheckCollisionPointRec(mousePoint, setListRec)) {
+                if (CheckCollisionPointRec(mousePoint, setListDisplayRec)) { // Use setListDisplayRec
                     float wheelMove = GetMouseWheelMove();
                     if (wheelMove != 0) {
                         float itemHeight = SET_DISPLAY_FONT_SIZE + 10;
                         float totalContentHeight = setCount * itemHeight;
-                        float maxScrollOffset = totalContentHeight - setListRec.height;
+                        float maxScrollOffset = totalContentHeight - setListDisplayRec.height; // Use setListDisplayRec.height
                         if (maxScrollOffset < 0) maxScrollOffset = 0;
 
                         setListScrollOffset -= wheelMove * 20; // Adjust scroll speed
@@ -744,48 +764,64 @@ int main(void)
                 {
                     DrawText("Select or Create a Flashcard Set", screenWidth/2 - MeasureText("Select or Create a Flashcard Set", 30)/2, 20, 30, DARKGRAY);
 
-                    // New Set Name Input
-                    DrawText("New Set Name:", newSetTextBox.x, newSetTextBox.y - 25, 20, DARKGRAY);
-                    DrawRectangleRec(newSetTextBox, WHITE);
-                    DrawRectangleLinesEx(newSetTextBox, 2, (newSetNameActive) ? DARKBLUE : DARKGRAY);
-                    DrawText(newSetNameText, newSetTextBox.x + 5, newSetTextBox.y + newSetTextBox.height/2 - 10, 20, BLACK);
-                    if (newSetNameActive && ((int)(GetTime() * 2.0f) % 2 == 0)) DrawText("_", newSetTextBox.x + 5 + MeasureText(newSetNameText, 20), newSetTextBox.y + newSetTextBox.height/2 - 10, 20, BLACK);
+                    // Conditionally draw New Set Name Input and Create Set Button
+                    if (nextScreenAfterSetSelection == EDITOR) {
+                        // New Set Name Input
+                        DrawText("New Set Name:", newSetTextBox.x, newSetTextBox.y - 25, 20, DARKGRAY);
+                        DrawRectangleRec(newSetTextBox, WHITE);
+                        DrawRectangleLinesEx(newSetTextBox, 2, (newSetNameActive) ? DARKBLUE : DARKGRAY);
+                        DrawText(newSetNameText, newSetTextBox.x + 5, newSetTextBox.y + newSetTextBox.height/2 - 10, 20, BLACK);
+                        if (newSetNameActive && ((int)(GetTime() * 2.0f) % 2 == 0)) DrawText("_", newSetTextBox.x + 5 + MeasureText(newSetNameText, 20), newSetTextBox.y + newSetTextBox.height/2 - 10, 20, BLACK);
 
-                    // Create Set Button
-                    DrawRectangleRec(createSetButton, GREEN);
-                    DrawText("Create New Set", createSetButton.x + createSetButton.width/2 - MeasureText("Create New Set", 20)/2, createSetButton.y + createSetButton.height/2 - 10, 20, WHITE);
-                    DrawRectangleLinesEx(createSetButton, 2, DARKGREEN);
+                        // Create Set Button
+                        DrawRectangleRec(createSetButton, GREEN);
+                        DrawText("Create New Set", createSetButton.x + createSetButton.width/2 - MeasureText("Create New Set", 20)/2, createSetButton.y + createSetButton.height/2 - 10, 20, WHITE);
+                        DrawRectangleLinesEx(createSetButton, 2, DARKGREEN);
+                    }
+
+                    // Calculate setListDisplayRec based on context
+                    Rectangle setListDisplayRec;
+                    float listY;
+                    float listHeight;
+
+                    if (nextScreenAfterSetSelection == EDITOR) {
+                        listY = 230;
+                        listHeight = bottomButtonY - 230 - 20;
+                    } else { // nextScreenAfterSetSelection == QUIZ
+                        listY = 80; // Move up
+                        listHeight = bottomButtonY - 80 - 20; // Adjust height
+                    }
+                    setListDisplayRec = (Rectangle){ screenWidth/2 - (screenWidth - 80)/2, listY, screenWidth - 80, listHeight };
 
                     // Existing Sets List
-                    DrawText("Existing Sets:", setListRec.x, setListRec.y - 25, 20, DARKGRAY);
-                    DrawRectangleRec(setListRec, LIGHTGRAY);
-                    DrawRectangleLinesEx(setListRec, 2, DARKGRAY);
+                    DrawText("Existing Sets:", setListDisplayRec.x, setListDisplayRec.y - 25, 20, DARKGRAY);
+                    DrawRectangleRec(setListDisplayRec, LIGHTGRAY);
+                    DrawRectangleLinesEx(setListDisplayRec, 2, DARKGRAY);
 
-                    BeginScissorMode(setListRec.x, setListRec.y, setListRec.width, setListRec.height);
+                    BeginScissorMode(setListDisplayRec.x, setListDisplayRec.y, setListDisplayRec.width, setListDisplayRec.height);
 
                     float itemHeight = SET_DISPLAY_FONT_SIZE + 10;
                     float totalContentHeight = setCount * itemHeight;
-                    float maxScrollOffset = totalContentHeight - setListRec.height;
+                    float maxScrollOffset = totalContentHeight - setListDisplayRec.height;
                     if (maxScrollOffset < 0) maxScrollOffset = 0;
 
                     if (setListScrollOffset < 0) setListScrollOffset = 0;
                     if (setListScrollOffset > maxScrollOffset) setListScrollOffset = maxScrollOffset;
 
                     for (int i = 0; i < setCount; i++) {
-                        float itemY = setListRec.y + (i * itemHeight) - setListScrollOffset;
-                        Rectangle itemDisplayRec = { setListRec.x, itemY, setListRec.width, itemHeight };
+                        float itemY = setListDisplayRec.y + (i * itemHeight) - setListScrollOffset;
+                        Rectangle itemDisplayRec = { setListDisplayRec.x, itemY, setListDisplayRec.width, itemHeight };
 
                         // Only draw if the item is at least partially visible
-                        if (itemY < setListRec.y + setListRec.height && itemY + itemHeight > setListRec.y) {
+                        if (itemY < setListDisplayRec.y + setListDisplayRec.height && itemY + itemHeight > setListDisplayRec.y) {
                             // Highlight current selected set
                             if (i == highlightedSetIndex) {
                                 DrawRectangleRec(itemDisplayRec, SKYBLUE);
                                 DrawRectangleLinesEx(itemDisplayRec, 2, BLUE);
                             }
-                            // Removed the else if (i == currentSetIndex) block that drew the gray highlight
                             
                             // Draw set name
-                            DrawText(sets[i].name, setListRec.x + 15, (int)itemY + 10, SET_DISPLAY_FONT_SIZE, BLACK);
+                            DrawText(sets[i].name, setListDisplayRec.x + 15, (int)itemY + 10, SET_DISPLAY_FONT_SIZE, BLACK);
                         }
                     }
                     EndScissorMode();
@@ -799,7 +835,7 @@ int main(void)
                     DrawRectangleLinesEx(selectSetButton, 2, selectBtnBorderColor);
 
                     // Draw "Delete Set" Button
-                    bool canDelete = (highlightedSetIndex != -1 && highlightedSetIndex < setCount);
+                    bool canDelete = (highlightedSetIndex != -1 && highlightedSetIndex < setCount) && (nextScreenAfterSetSelection == EDITOR); // Only allow deletion in EDITOR mode
                     Color deleteBtnColor = canDelete ? MAROON : GRAY;
                     Color deleteBtnBorderColor = canDelete ? RED : DARKGRAY;
                     DrawRectangleRec(deleteSetButton, deleteBtnColor);
