@@ -477,7 +477,7 @@ int main(void)
             {
                 Vector2 mousePoint = GetMousePosition();
 
-                // Check for text box activation
+                // Handle text box activation
                 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
                 {
                     if (CheckCollisionPointRec(mousePoint, frontTextBox))
@@ -618,6 +618,19 @@ int main(void)
                             frontBoxActive = false;
                             backBoxActive = false;
                         }
+                    }
+                }
+
+                // Handle Tab key for switching between text boxes
+                if (IsKeyPressed(KEY_TAB)) {
+                    if (frontBoxActive) {
+                        frontBoxActive = false;
+                        backBoxActive = true;
+                    } else if (backBoxActive) {
+                        backBoxActive = false;
+                        frontBoxActive = true;
+                    } else { // If neither is active, activate front box
+                        frontBoxActive = true;
                     }
                 }
 
