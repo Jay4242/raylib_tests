@@ -1,1 +1,1 @@
-![Screenshot](flashcards/image.png)
+![Screenshot](image.png)
