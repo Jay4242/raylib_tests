@@ -408,7 +408,7 @@ int main(void)
                         int clickedItem = -1;
                         for (int i = 0; i < setCount; i++) {
                             float itemY = setListDisplayRec.y + (i * itemHeight) - setListScrollOffset; // Use setListDisplayRec.y
-                            Rectangle itemClickRec = { setListDisplayRec.x, itemY, setListDisplayRec.width, itemHeight }; // Use setListDisplayRec.x and .width
+                            Rectangle itemClickRec = { setListDisplayRec.x, itemY, setListDisplayRec.width, itemHeight };
 
                             if (CheckCollisionPointRec(mousePoint, itemClickRec)) {
                                 clickedItem = i;
@@ -497,26 +497,26 @@ int main(void)
             {
                 Vector2 mousePoint = GetMousePosition();
 
-                // Handle text box activation
+                // Handle text box activation and general clicks
                 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
                 {
+                    bool clickHandledByUI = false; // Flag to track if the click hit any specific UI element
+
+                    // Check text box clicks first
                     if (CheckCollisionPointRec(mousePoint, frontTextBox))
                     {
                         frontBoxActive = true;
                         backBoxActive = false;
+                        clickHandledByUI = true;
                     }
                     else if (CheckCollisionPointRec(mousePoint, backTextBox))
                     {
                         backBoxActive = true;
                         frontBoxActive = false;
-                    }
-                    else // Clicked outside text boxes
-                    {
-                        frontBoxActive = false;
-                        backBoxActive = false;
+                        clickHandledByUI = true;
                     }
 
-                    // Check for button clicks
+                    // Check button clicks
                     if (CheckCollisionPointRec(mousePoint, addButton) && currentSetIndex != -1)
                     {
                         if (strlen(frontText) > 0 && strlen(backText) > 0) {
@@ -559,6 +559,7 @@ int main(void)
                         } else {
                             TraceLog(LOG_WARNING, "Cannot add/update empty flashcard. Both front and back must have text.");
                         }
+                        clickHandledByUI = true;
                     }
                     else if (CheckCollisionPointRec(mousePoint, editorBackToMenuButton))
                     {
@@ -572,6 +573,7 @@ int main(void)
                         backBoxActive = false;
                         selectedCardIndex = -1;
                         flashcardListScrollOffset = 0.0f; // Reset scroll when leaving editor
+                        clickHandledByUI = true;
                     }
                     else if (CheckCollisionPointRec(mousePoint, deleteButton) && selectedCardIndex != -1 && currentSetIndex != -1)
                     {
@@ -600,6 +602,7 @@ int main(void)
                             if (maxScrollOffset < 0) maxScrollOffset = 0;
                             if (flashcardListScrollOffset > maxScrollOffset) flashcardListScrollOffset = maxScrollOffset;
                         }
+                        clickHandledByUI = true;
                     }
                     else if (CheckCollisionPointRec(mousePoint, flashcardListRec) && currentSetIndex != -1) // Check clicks within the list area for card selection
                     {
@@ -638,6 +641,18 @@ int main(void)
                             frontBoxActive = false;
                             backBoxActive = false;
                         }
+                        clickHandledByUI = true; // The list area click was handled
+                    }
+
+                    // If the click was not handled by any specific UI element, it's a background click
+                    if (!clickHandledByUI) {
+                        selectedCardIndex = -1;
+                        frontText[0] = '\0';
+                        frontTextLength = 0;
+                        backText[0] = '\0';
+                        backTextLength = 0;
+                        frontBoxActive = false; // Deactivate text boxes
+                        backBoxActive = false;
                     }
                 }
 
@@ -828,19 +843,19 @@ int main(void)
 
                     // Draw "Select Set" Button
                     bool canSelect = (highlightedSetIndex != -1 && highlightedSetIndex < setCount);
-                    Color selectBtnColor = canSelect ? DARKBLUE : GRAY;
-                    Color selectBtnBorderColor = canSelect ? BLUE : DARKGRAY;
-                    DrawRectangleRec(selectSetButton, selectBtnColor);
-                    DrawText("Select Set", selectSetButton.x + selectSetButton.width/2 - MeasureText("Select Set", 20)/2, selectSetButton.y + selectSetButton.height/2 - 10, 20, WHITE);
-                    DrawRectangleLinesEx(selectSetButton, 2, selectBtnBorderColor);
+                    if (canSelect) {
+                        DrawRectangleRec(selectSetButton, DARKBLUE);
+                        DrawText("Select Set", selectSetButton.x + selectSetButton.width/2 - MeasureText("Select Set", 20)/2, selectSetButton.y + selectSetButton.height/2 - 10, 20, WHITE);
+                        DrawRectangleLinesEx(selectSetButton, 2, BLUE);
+                    }
 
                     // Draw "Delete Set" Button
                     bool canDelete = (highlightedSetIndex != -1 && highlightedSetIndex < setCount) && (nextScreenAfterSetSelection == EDITOR); // Only allow deletion in EDITOR mode
-                    Color deleteBtnColor = canDelete ? MAROON : GRAY;
-                    Color deleteBtnBorderColor = canDelete ? RED : DARKGRAY;
-                    DrawRectangleRec(deleteSetButton, deleteBtnColor);
-                    DrawText("Delete Set", deleteSetButton.x + deleteSetButton.width/2 - MeasureText("Delete Set", 20)/2, deleteSetButton.y + deleteSetButton.height/2 - 10, 20, WHITE);
-                    DrawRectangleLinesEx(deleteSetButton, 2, deleteBtnBorderColor);
+                    if (canDelete) {
+                        DrawRectangleRec(deleteSetButton, MAROON);
+                        DrawText("Delete Set", deleteSetButton.x + deleteSetButton.width/2 - MeasureText("Delete Set", 20)/2, deleteSetButton.y + deleteSetButton.height/2 - 10, 20, WHITE);
+                        DrawRectangleLinesEx(deleteSetButton, 2, RED);
+                    }
 
                     // Back to Menu Button
                     DrawRectangleRec(setSelectionBackToMenuButton, RED);
@@ -893,7 +908,7 @@ int main(void)
                         DrawRectangleRec(frontTextBox, LIGHTGRAY);
                         DrawRectangleRec(backTextBox, LIGHTGRAY);
                         DrawRectangleRec(addButton, LIGHTGRAY);
-                        DrawRectangleRec(deleteButton, LIGHTGRAY);
+                        // The delete button will not be drawn at all if no card is selected
                     } else {
                         DrawText(TextFormat("Editing Set: %s", sets[currentSetIndex].name), EDITOR_LEFT_PANEL_X, 60, 20, DARKGRAY);
 
@@ -970,10 +985,6 @@ int main(void)
                         {
                             DrawRectangleRec(deleteButton, MAROON);
                             DrawText("Delete Flashcard", deleteButton.x + deleteButton.width/2 - MeasureText("Delete Flashcard", 20)/2, deleteButton.y + deleteButton.height/2 - 10, 20, WHITE);
-                            DrawRectangleLinesEx(deleteButton, 2, DARKGRAY);
-                        } else {
-                            DrawRectangleRec(deleteButton, LIGHTGRAY); // Draw disabled delete button
-                            DrawText("Delete Flashcard", deleteButton.x + deleteButton.width/2 - MeasureText("Delete Flashcard", 20)/2, deleteButton.y + deleteButton.height/2 - 10, 20, GRAY);
                             DrawRectangleLinesEx(deleteButton, 2, DARKGRAY);
                         }
                     }
