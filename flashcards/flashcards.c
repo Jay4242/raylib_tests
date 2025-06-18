@@ -815,7 +815,7 @@ int main(void)
                         {
                             // Display current flashcard
                             const char* currentText = showFront ? sets[currentSetIndex].cards[quizOrder[currentCardIndex]].front : sets[currentSetIndex].cards[quizOrder[currentCardIndex]].back;
-                            DrawText(currentText, screenWidth/2 - MeasureText(currentText, 30)/2, screenHeight/2 - 30, 30, DARKGRAY);
+                            DrawText(currentText, screenWidth/2 - MeasureText(currentText, 30)/2, screenHeight/2 - 80, 30, DARKGRAY);
 
                             // Draw "Reveal/Hide" Button
                             DrawRectangleRec(revealButton, SKYBLUE);
